@@ -1,0 +1,68 @@
+[package]
+name = "pashari"
+version = "0.6.0"
+edition = "2024"
+description = "Screenshot / Screen record for Windows"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/yozba/pashari"
+readme = "README.md"
+build = "build.rs"
+
+[dependencies]
+winit = "0.30"
+softbuffer = "0.4"
+xcap = "0.0.14"
+image = "0.25"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+ab_glyph = "0.2"
+arboard = "3"
+windows-capture = "2"
+gif = "0.14"
+cpal = "0.15"
+rubato = "0.15"
+global-hotkey = "0.8"
+tray-icon = "0.19"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+serde_json = "1"
+rfd = "0.15"
+ureq = { version = "3", features = ["json"] }
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Threading",
+    "Win32_Security",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_Registry",
+] }
+raw-window-handle = "0.6"
+# 画像の再サンプリング（paint_image）を並列化するための常駐ワーカースレッド
+# プール。std::thread::scope で毎フレーム新規スレッドを作り直すと、その
+# 生成コスト自体が並列化の効果を相殺してしまうため、使い回せるプールを
+# 持つ rayon を採用する（代替案: 自前でチャンネル/条件変数によるプールを
+# 書くことも検討したが、コード量・デッドロック等のリスクが大きいため見送り）。
+rayon = "1"
+
+[build-dependencies]
+winresource = "0.1"
+
+# デバッグビルドでもピクセル処理（ズーム時の再サンプル等）が実用速度で動くよう
+# 軽い最適化を有効化する。デバッグ情報は保持される。
+[profile.dev]
+opt-level = 1
+
+# 配布用ビルド。サイズ削減とランタイム性能を優先する（ビルド時間は伸びるが
+# CI 側でのみ影響する）。
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

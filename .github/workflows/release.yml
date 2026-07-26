@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # 配布物を作る前に壊れていないか最終確認する。
+      - name: cargo test
+        run: cargo test
+
+      - name: cargo build --release
+        run: cargo build --release
+
+      - name: バージョン名を決定
+        id: version
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -like "refs/tags/*") {
+            $ver = $env:GITHUB_REF -replace "refs/tags/", ""
+          } else {
+            $ver = "dev"
+          }
+          "version=$ver" >> $env:GITHUB_OUTPUT
+
+      - name: zip にまとめる
+        shell: pwsh
+        run: |
+          $dest = "dist"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Copy-Item target/release/pashari.exe $dest/
+          Copy-Item README.md $dest/
+          if (Test-Path LICENSE) { Copy-Item LICENSE $dest/ }
+          Compress-Archive -Path "$dest/*" -DestinationPath "pashari-${{ steps.version.outputs.version }}-windows-x64.zip"
+
+      - name: アーティファクトとして保存
+        uses: actions/upload-artifact@v4
+        with:
+          name: pashari-${{ steps.version.outputs.version }}-windows-x64
+          path: pashari-${{ steps.version.outputs.version }}-windows-x64.zip
+
+      # Inno Setup（ISCC.exe）をインストールする。windows-latest ランナーに
+      # 入っている前提を置かず、常に明示インストールして再現性を優先する。
+      - name: Inno Setup をインストール
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: インストーラをビルド
+        shell: pwsh
+        run: |
+          # AppVersion 用にタグ先頭の "v" を外す（workflow_dispatch の "dev" はそのまま）。
+          $installerVer = "${{ steps.version.outputs.version }}" -replace '^v', ''
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$installerVer" installer\pashari.iss
+
+      - name: インストーラをアーティファクトとして保存
+        uses: actions/upload-artifact@v4
+        with:
+          name: pashari-${{ steps.version.outputs.version }}-windows-x64-setup
+          path: dist_installer/pashari-*-setup.exe
+
+      # タグ push のときだけ GitHub Release を作成する（workflow_dispatch の
+      # 手動実行はビルド確認のみで、Release は作らない）。
+      - name: GitHub Release を作成
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            pashari-${{ steps.version.outputs.version }}-windows-x64.zip
+            dist_installer/pashari-*-setup.exe
+          generate_release_notes: true
