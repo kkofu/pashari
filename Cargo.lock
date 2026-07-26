@@ -2862,7 +2862,7 @@ dependencies = [
 
 [[package]]
 name = "pashari"
-version = "0.6.0"
+version = "1.0.0"
 dependencies = [
  "ab_glyph",
  "arboard",
