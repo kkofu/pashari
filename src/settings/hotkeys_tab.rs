@@ -4,8 +4,9 @@
 use winit::keyboard::{KeyCode, ModifiersState};
 
 use super::{
-    ACCENT, Btn, CONTENT_X, CaptureTarget, Settings, SettingsResult, field, hover_tint_for,
-    stroke_top_bottom_aware, theme_colors,
+    ACCENT, Btn, CONTENT_X, CaptureTarget, SCROLLBAR_THUMB, SCROLLBAR_THUMB_HOVER, Settings,
+    SettingsResult, field, hover_tint_for, scrollbar_thumb_rect, stroke_top_bottom_aware,
+    theme_colors,
 };
 use crate::localkey::LocalKey;
 use crate::ui::text::TextRenderer;
@@ -971,6 +972,7 @@ pub(super) fn draw_hotkeys(
     hotkey_scroll: i32,
     hotkey_error: &Option<String>,
     capturing: Option<CaptureTarget>,
+    scrollbar_active: bool,
 ) {
     let (
         BG,
@@ -1159,25 +1161,18 @@ pub(super) fn draw_hotkeys(
         draw_refresh_icon_clipped(canvas, (cx, cy), icon_r, 2, icon_color, viewport);
     }
 
-    // Scrollbar (display only; scrolling itself happens via mouse wheel).
+    // Scrollbar (also drag-scrollable; see `Settings::scrollbar_drag`).
     let content_h = hotkey_content_height(Some(t), sw, hotkey, hotkey_values);
-    let viewport_h = (viewport.y1 - viewport.y0) as i64;
-    if content_h > viewport_h {
-        let track = field(
-            sw.saturating_sub(10),
-            viewport.y0,
-            4,
-            (viewport.y1 - viewport.y0).max(1),
-        );
+    let track_x0 = sw.saturating_sub(10);
+    if let Some(thumb) = scrollbar_thumb_rect(track_x0, viewport, content_h, hotkey_scroll) {
+        let track = field(track_x0, viewport.y0, 4, (viewport.y1 - viewport.y0).max(1));
         canvas.fill(track, FIELD_BG);
-        let thumb_h = ((viewport_h * viewport_h / content_h).max(20)) as usize;
-        let max_scroll = (content_h - viewport_h).max(1);
-        let thumb_y = viewport.y0
-            + ((hotkey_scroll as i64 * (viewport_h - thumb_h as i64).max(0)) / max_scroll) as usize;
-        canvas.fill(
-            field(sw.saturating_sub(10), thumb_y, 4, thumb_h),
-            0x0080_8080,
-        );
+        let thumb_color = if scrollbar_active {
+            SCROLLBAR_THUMB_HOVER
+        } else {
+            SCROLLBAR_THUMB
+        };
+        canvas.fill(thumb, thumb_color);
     }
 
     if let Some(msg) = hotkey_error {

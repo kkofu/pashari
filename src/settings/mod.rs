@@ -57,6 +57,10 @@ const TAB_BTN_GAP: usize = 6;
 // editor doesn't.
 const ACCENT: u32 = 0x004D_A6FF;
 const SAVE_BG: u32 = 0x0033_A852;
+/// Scrollbar thumb colors: subtle by default, brightening while
+/// hovered/dragged (see `Settings::scrollbar_hover`/`scrollbar_drag`).
+const SCROLLBAR_THUMB: u32 = 0x00A8_A8A8;
+const SCROLLBAR_THUMB_HOVER: u32 = 0x0080_8080;
 
 /// A vertical tab.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -351,6 +355,15 @@ pub struct Settings {
     /// picker's SV/Hue rects (`hover` only tracks per-`Btn` hit-testing and
     /// has no raw coordinates).
     cursor: (f64, f64),
+    /// The scrollbar thumb being drag-scrolled for whichever tab is active
+    /// (Hotkeys/Recent/Upload), holding the vertical offset between the
+    /// initial click and the thumb's top (so dragging doesn't snap the
+    /// thumb to be centered on the cursor). `None` when not dragging.
+    scrollbar_drag: Option<i32>,
+    /// Whether the cursor is over the active tab's scrollbar thumb
+    /// (independent of `scrollbar_drag`, so hovering shows the same
+    /// brighter color before a drag actually starts).
+    scrollbar_hover: bool,
 
     // --- Upload tab (custom uploaders) ---
     /// Registered profiles; edited in place here and written back on Save.
@@ -537,6 +550,8 @@ impl Settings {
             picker_drag: None,
             picker_target: None,
             cursor: (0.0, 0.0),
+            scrollbar_drag: None,
+            scrollbar_hover: false,
             uploaders: up.uploaders,
             editing_uploader: 0,
             uploader_scroll: 0,
@@ -706,10 +721,18 @@ impl Settings {
                 } else if self.text_drag {
                     // Follow the text field drag-selection.
                     self.update_text_drag(position.x);
+                } else if let Some(grab_offset) = self.scrollbar_drag {
+                    // Follow the scrollbar-thumb drag.
+                    self.update_scrollbar_drag(position.y, grab_offset);
                 } else {
                     let h = self.button_at(position.x as usize, position.y as usize);
                     if h != self.hover {
                         self.hover = h;
+                        self.request_redraw();
+                    }
+                    let scrollbar_hover = self.scrollbar_hit(position.x, position.y).is_some();
+                    if scrollbar_hover != self.scrollbar_hover {
+                        self.scrollbar_hover = scrollbar_hover;
                         self.request_redraw();
                     }
                 }
@@ -886,6 +909,68 @@ impl Settings {
         }
     }
 
+    /// The active tab's scroll viewport, content height, and current
+    /// scroll offset — `None` if the current tab isn't one of the
+    /// scrollable ones (Hotkeys/Recent/Upload).
+    fn active_scroll_state(&self) -> Option<(Rect, i64, i32)> {
+        let (sw, sh) = self.size;
+        match self.tab {
+            Tab::Hotkeys => {
+                let viewport = hotkey_viewport(sw, sh);
+                let local_specs = self.local_bindings_snapshot();
+                let content_h =
+                    hotkey_content_height(self.text.as_ref(), sw, &self.hotkey, &local_specs);
+                Some((viewport, content_h, self.hotkey_scroll))
+            }
+            Tab::Recent => {
+                let viewport = recent::session_viewport(sw, sh);
+                let content_h = recent::session_content_height(self.sessions.len());
+                Some((viewport, content_h, self.recent_scroll))
+            }
+            Tab::Upload => {
+                let viewport = upload_tab::uploader_viewport(sw);
+                let content_h = upload_tab::uploader_content_height(self.uploaders.len());
+                Some((viewport, content_h, self.uploader_scroll))
+            }
+            _ => None,
+        }
+    }
+
+    /// If `(x, y)` is on the active tab's scrollbar thumb, returns the
+    /// grab offset to start a drag with (the vertical distance from `y` to
+    /// the thumb's top).
+    fn scrollbar_hit(&self, x: f64, y: f64) -> Option<i32> {
+        let (viewport, content_h, scroll) = self.active_scroll_state()?;
+        let track_x0 = self.size.0.saturating_sub(10);
+        let thumb = scrollbar_thumb_rect(track_x0, viewport, content_h, scroll)?;
+        if inside(thumb, x, y) {
+            Some((y as i64 - thumb.y0 as i64) as i32)
+        } else {
+            None
+        }
+    }
+
+    /// Follows a scrollbar-thumb drag (called on every `CursorMoved` while
+    /// `scrollbar_drag` is `Some`), keeping `grab_offset` fixed under the cursor.
+    fn update_scrollbar_drag(&mut self, y: f64, grab_offset: i32) {
+        let Some((viewport, content_h, _)) = self.active_scroll_state() else {
+            return;
+        };
+        let viewport_h = (viewport.y1 - viewport.y0) as i64;
+        let max_scroll = (content_h - viewport_h).max(1);
+        let thumb_h = (viewport_h * viewport_h / content_h.max(1)).max(20);
+        let track_range = (viewport_h - thumb_h).max(1);
+        let thumb_y = y as i64 - grab_offset as i64 - viewport.y0 as i64;
+        let new_scroll = (thumb_y * max_scroll / track_range).clamp(0, max_scroll) as i32;
+        match self.tab {
+            Tab::Hotkeys => self.hotkey_scroll = new_scroll,
+            Tab::Recent => self.recent_scroll = new_scroll,
+            Tab::Upload => self.uploader_scroll = new_scroll,
+            _ => {}
+        }
+        self.request_redraw();
+    }
+
     fn on_mouse(&mut self, state: ElementState) -> Option<SettingsResult> {
         match state {
             ElementState::Pressed => {
@@ -908,6 +993,12 @@ impl Settings {
                         self.picker_target = None;
                         self.request_redraw();
                     }
+                    return None;
+                }
+                // Scrollbar thumb: start a drag, same "handled directly,
+                // bypassing `self.pressed`" treatment as the picker/text-field drags.
+                if let Some(grab_offset) = self.scrollbar_hit(cx, cy) {
+                    self.scrollbar_drag = Some(grab_offset);
                     return None;
                 }
                 // Text edit fields: place the caret at the click position.
@@ -953,6 +1044,9 @@ impl Settings {
                 }
                 if self.text_drag {
                     self.text_drag = false;
+                    return None;
+                }
+                if self.scrollbar_drag.take().is_some() {
                     return None;
                 }
                 if let Some(btn) = self.pressed.take()
@@ -1147,6 +1241,8 @@ impl Settings {
         let hotkey_error = self.hotkey_error.clone();
         let hotkey_scroll = self.hotkey_scroll;
         let recent_scroll = self.recent_scroll;
+        // Brighten the scrollbar thumb while hovered or actively dragged.
+        let scrollbar_active = self.scrollbar_hover || self.scrollbar_drag.is_some();
         let session_history_limit = self.session_history_limit;
         let session_limit_focus = self.session_limit_focus;
         let session_limit_buf = self.session_limit_buf.clone();
@@ -1258,6 +1354,7 @@ impl Settings {
                     sh,
                     &session_rows,
                     recent_scroll,
+                    scrollbar_active,
                 ),
                 Tab::General => general::draw_general(
                     &mut canvas,
@@ -1333,6 +1430,7 @@ impl Settings {
                     &upload_field_buf,
                     upload_field_cursor,
                     text,
+                    scrollbar_active,
                 ),
                 Tab::Hotkeys => hotkeys_tab::draw_hotkeys(
                     &mut canvas,
@@ -1348,6 +1446,7 @@ impl Settings {
                     hotkey_scroll,
                     &hotkey_error,
                     capturing,
+                    scrollbar_active,
                 ),
             }
 
@@ -1521,6 +1620,27 @@ fn inside(r: Rect, x: f64, y: f64) -> bool {
     x >= r.x0 as f64 && x < r.x1 as f64 && y >= r.y0 as f64 && y < r.y1 as f64
 }
 
+/// The scrollbar thumb's rect for a scrollable tab (`None` if the content
+/// fits within `viewport` without scrolling, i.e. no scrollbar shown).
+/// Shared by each tab's draw code and by the drag hit-testing/update logic
+/// below, so the two can never drift apart.
+pub(super) fn scrollbar_thumb_rect(
+    track_x0: usize,
+    viewport: Rect,
+    content_h: i64,
+    scroll: i32,
+) -> Option<Rect> {
+    let viewport_h = (viewport.y1 - viewport.y0) as i64;
+    if content_h <= viewport_h {
+        return None;
+    }
+    let thumb_h = ((viewport_h * viewport_h / content_h).max(20)) as usize;
+    let max_scroll = (content_h - viewport_h).max(1);
+    let thumb_y = viewport.y0
+        + ((scroll as i64 * (viewport_h - thumb_h as i64).max(0)) / max_scroll) as usize;
+    Some(field(track_x0, thumb_y, 4, thumb_h))
+}
+
 /// Like `Canvas::stroke`, but the top/bottom edges are only drawn when
 /// `draw_top`/`draw_bottom` is true (left/right are always drawn) — used to
 /// avoid a stray line at the clip boundary when a Hotkeys tab row is
@@ -1621,5 +1741,32 @@ mod tests {
         // The three rects don't overlap.
         assert!(path_a.x1 <= browse_a.x0);
         assert!(browse_a.x1 <= default_a.x0);
+    }
+
+    #[test]
+    fn scrollbar_thumb_rect_is_none_when_content_fits_the_viewport() {
+        let viewport = Rect {
+            x0: 0,
+            y0: 0,
+            x1: 100,
+            y1: 200,
+        };
+        assert!(scrollbar_thumb_rect(90, viewport, 150, 0).is_none());
+    }
+
+    #[test]
+    fn scrollbar_thumb_rect_spans_the_track_proportionally_at_min_and_max_scroll() {
+        let viewport = Rect {
+            x0: 0,
+            y0: 10,
+            x1: 100,
+            y1: 210,
+        };
+        let content_h = 400; // Double the 200px viewport.
+        let at_top = scrollbar_thumb_rect(90, viewport, content_h, 0).unwrap();
+        assert_eq!(at_top.y0, viewport.y0);
+        let max_scroll = (content_h - 200) as i32;
+        let at_bottom = scrollbar_thumb_rect(90, viewport, content_h, max_scroll).unwrap();
+        assert_eq!(at_bottom.y1, viewport.y1);
     }
 }

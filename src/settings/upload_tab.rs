@@ -6,9 +6,10 @@
 use winit::keyboard::{Key, NamedKey};
 
 use super::{
-    ACCENT, Btn, CONTENT_X, Settings, SettingsResult, TextCursor, UPLOAD_FIELDS, UploadField,
-    apply_common_edit_key, byte_index_for_char_count, char_index_for_x, field, hover_tint_for,
-    stroke_top_bottom_aware, theme_colors, x_for_char_index,
+    ACCENT, Btn, CONTENT_X, SCROLLBAR_THUMB, SCROLLBAR_THUMB_HOVER, Settings, SettingsResult,
+    TextCursor, UPLOAD_FIELDS, UploadField, apply_common_edit_key, byte_index_for_char_count,
+    char_index_for_x, field, hover_tint_for, scrollbar_thumb_rect, stroke_top_bottom_aware,
+    theme_colors, x_for_char_index,
 };
 use crate::store::UploaderProfile;
 use crate::ui::text::TextRenderer;
@@ -399,6 +400,7 @@ pub(super) fn draw_upload(
     upload_field_buf: &str,
     upload_field_cursor: TextCursor,
     text: Option<&TextRenderer>,
+    scrollbar_active: bool,
 ) {
     let (
         BG,
@@ -506,26 +508,23 @@ pub(super) fn draw_upload(
         );
     }
 
-    // Scrollbar (display only; scrolling is wheel-driven).
+    // Scrollbar (also drag-scrollable; see `Settings::scrollbar_drag`).
     let content_h = uploader_content_height(uploaders.len());
-    let viewport_h = (list_viewport.y1 - list_viewport.y0) as i64;
-    if content_h > viewport_h {
+    let track_x0 = sw.saturating_sub(10);
+    if let Some(thumb) = scrollbar_thumb_rect(track_x0, list_viewport, content_h, uploader_scroll) {
         let track = field(
-            sw.saturating_sub(10),
+            track_x0,
             list_viewport.y0,
             4,
             (list_viewport.y1 - list_viewport.y0).max(1),
         );
         canvas.fill(track, FIELD_BG);
-        let thumb_h = ((viewport_h * viewport_h / content_h).max(20)) as usize;
-        let max_scroll = (content_h - viewport_h).max(1);
-        let thumb_y = list_viewport.y0
-            + ((uploader_scroll as i64 * (viewport_h - thumb_h as i64).max(0)) / max_scroll)
-                as usize;
-        canvas.fill(
-            field(sw.saturating_sub(10), thumb_y, 4, thumb_h),
-            0x0080_8080,
-        );
+        let thumb_color = if scrollbar_active {
+            SCROLLBAR_THUMB_HOVER
+        } else {
+            SCROLLBAR_THUMB
+        };
+        canvas.fill(thumb, thumb_color);
     }
 
     // Edit panel for the selected profile.

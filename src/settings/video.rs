@@ -4,7 +4,7 @@
 use winit::keyboard::{Key, NamedKey};
 
 use super::{
-    ACCENT, Btn, CONTENT_X, SAVE_KINDS, SaveKind, Settings, SettingsResult, TextCursor,
+    ACCENT, Btn, CONTENT_X, SAVE_KINDS, SaveKind, Settings, SettingsResult, TextCursor, WIN_H,
     apply_common_edit_key, char_index_for_x, field, hover_tint_for, inset, next_row_y,
     save_row_layout, theme_colors, x_for_char_index,
 };
@@ -126,6 +126,42 @@ pub(super) fn click_color_picker_geom(
     (popup, sv, hue)
 }
 
+/// The rect for option `i` in a stacked list of `count` items of height
+/// `item_h`, normally stacked below `closed`. Flips to sit above `closed`
+/// instead if the full list wouldn't fit within the window (mirrors the
+/// action menu's below/above fallback in `overlay::menu`) — otherwise a
+/// dropdown near the bottom of the tab would draw (and hit-test) past the
+/// window edge.
+///
+/// Left-aligned to `closed`'s left edge, like a normal dropdown, unless
+/// that would run the list past the window's current right edge (`sw`) —
+/// the audio-device lists can be wider than the closed button to fit a
+/// long device name (`audio_dropdown_option_w`). In that case it grows
+/// left from `closed`'s right edge instead, staying on-screen. A no-op
+/// for the fixed-width bitrate/sample-rate lists, where `w` always equals
+/// the closed button's own width and both anchors agree.
+fn stacked_option_rect(
+    closed: Rect,
+    item_h: usize,
+    count: usize,
+    i: usize,
+    w: usize,
+    sw: usize,
+) -> Rect {
+    let total_h = count * item_h;
+    let y0 = if closed.y1 + total_h <= WIN_H {
+        closed.y1 + i * item_h
+    } else {
+        closed.y0.saturating_sub(total_h) + i * item_h
+    };
+    let x0 = if closed.x0 + w <= sw {
+        closed.x0
+    } else {
+        closed.x1.saturating_sub(w)
+    };
+    field(x0, y0, w, item_h)
+}
+
 const BITRATE_PRESETS: [(u32, &str); 3] = [(8, "Low"), (15, "Medium"), (30, "High")];
 
 const BITRATE_LABEL: &str = "Video bitrate:";
@@ -136,14 +172,16 @@ fn bitrate_dropdown_rect(sw: usize) -> Rect {
     video_value_rect(sw, BITRATE_ROW_Y, BITRATE_DROPDOWN_H)
 }
 
-/// Option `i` rect when open, stacked below the closed button.
+/// Option `i` rect when open (see `stacked_option_rect`).
 fn bitrate_option_rect(sw: usize, i: usize) -> Rect {
     let closed = bitrate_dropdown_rect(sw);
-    field(
-        closed.x0,
-        closed.y1 + i * BITRATE_DROPDOWN_H,
-        VIDEO_VALUE_W,
+    stacked_option_rect(
+        closed,
         BITRATE_DROPDOWN_H,
+        BITRATE_PRESETS.len(),
+        i,
+        VIDEO_VALUE_W,
+        sw,
     )
 }
 
@@ -157,14 +195,16 @@ fn sample_rate_dropdown_rect(sw: usize) -> Rect {
     video_value_rect(sw, SAMPLE_RATE_ROW_Y, SAMPLE_RATE_DROPDOWN_H)
 }
 
-/// Option `i` rect when open, stacked below the closed button.
+/// Option `i` rect when open (see `stacked_option_rect`).
 fn sample_rate_option_rect(sw: usize, i: usize) -> Rect {
     let closed = sample_rate_dropdown_rect(sw);
-    field(
-        closed.x0,
-        closed.y1 + i * SAMPLE_RATE_DROPDOWN_H,
-        VIDEO_VALUE_W,
+    stacked_option_rect(
+        closed,
         SAMPLE_RATE_DROPDOWN_H,
+        AUDIO_SAMPLE_RATE_PRESETS.len(),
+        i,
+        VIDEO_VALUE_W,
+        sw,
     )
 }
 
@@ -208,8 +248,7 @@ fn audio_output_dropdown_rect(sw: usize) -> Rect {
     video_value_rect(sw, AUDIO_OUTPUT_ROW_Y, AUDIO_DROPDOWN_H)
 }
 
-/// Option `i` rect when open, stacked below the closed button; width fits
-/// its content.
+/// Option `i` rect when open (see `stacked_option_rect`); width fits its content.
 fn audio_output_option_rect(
     sw: usize,
     text: Option<&TextRenderer>,
@@ -217,12 +256,8 @@ fn audio_output_option_rect(
     i: usize,
 ) -> Rect {
     let closed = audio_output_dropdown_rect(sw);
-    field(
-        closed.x0,
-        closed.y1 + i * AUDIO_DROPDOWN_H,
-        audio_dropdown_option_w(text, devices),
-        AUDIO_DROPDOWN_H,
-    )
+    let w = audio_dropdown_option_w(text, devices);
+    stacked_option_rect(closed, AUDIO_DROPDOWN_H, devices.len(), i, w, sw)
 }
 
 fn audio_input_dropdown_rect(sw: usize) -> Rect {
@@ -236,12 +271,8 @@ fn audio_input_option_rect(
     i: usize,
 ) -> Rect {
     let closed = audio_input_dropdown_rect(sw);
-    field(
-        closed.x0,
-        closed.y1 + i * AUDIO_DROPDOWN_H,
-        audio_dropdown_option_w(text, devices),
-        AUDIO_DROPDOWN_H,
-    )
+    let w = audio_dropdown_option_w(text, devices);
+    stacked_option_rect(closed, AUDIO_DROPDOWN_H, devices.len(), i, w, sw)
 }
 
 /// Max width/height rows: label + numeric field, no ± stepper (not useful
@@ -1247,9 +1278,10 @@ mod tests {
     use super::{
         VIDEO_VALUE_W, audio_device_display_name, audio_dropdown_option_w,
         audio_input_dropdown_rect, audio_output_dropdown_rect, bitrate_dropdown_rect,
-        parse_max_resolution,
+        parse_max_resolution, stacked_option_rect,
     };
-    use crate::settings::WIN_W;
+    use crate::settings::{WIN_H, WIN_W};
+    use crate::ui::Rect;
 
     #[test]
     fn parse_max_resolution_allows_zero_and_keeps_current_on_invalid() {
@@ -1285,5 +1317,72 @@ mod tests {
     fn audio_device_display_name_shows_system_default_for_empty_string() {
         assert_eq!(audio_device_display_name(""), "System default");
         assert_eq!(audio_device_display_name("Speakers"), "Speakers");
+    }
+
+    #[test]
+    fn stacked_option_rect_stacks_below_when_it_fits() {
+        let closed = Rect {
+            x0: 10,
+            y0: 50,
+            x1: 210,
+            y1: 78,
+        };
+        let r0 = stacked_option_rect(closed, 28, 3, 0, 200, WIN_W);
+        let r2 = stacked_option_rect(closed, 28, 3, 2, 200, WIN_W);
+        assert_eq!(r0.y0, closed.y1);
+        assert_eq!(r2.y0, closed.y1 + 2 * 28);
+    }
+
+    #[test]
+    fn stacked_option_rect_left_aligns_to_the_closed_button_when_it_fits() {
+        // Wider than the closed button (e.g. a longer device name), but
+        // still fits within the window when left-aligned.
+        let closed = Rect {
+            x0: 50,
+            y0: 300,
+            x1: 250,
+            y1: 328,
+        };
+        let w = 300;
+        let r = stacked_option_rect(closed, 28, 1, 0, w, WIN_W);
+        assert_eq!(r.x0, closed.x0);
+        assert_eq!(r.x1, closed.x0 + w);
+    }
+
+    #[test]
+    fn stacked_option_rect_grows_left_from_the_shared_right_edge_when_left_aligning_would_overflow()
+    {
+        // Left-aligning this wide a list to the closed button would run
+        // past the window's right edge, so it grows left from the shared
+        // right edge instead, staying on-screen.
+        let closed = Rect {
+            x0: WIN_W - 240,
+            y0: 300,
+            x1: WIN_W - 20,
+            y1: 328,
+        };
+        let wide = 400;
+        let r = stacked_option_rect(closed, 28, 1, 0, wide, WIN_W);
+        assert_eq!(r.x1, closed.x1);
+        assert_eq!(r.x0, closed.x1 - wide);
+        assert!(r.x1 <= WIN_W);
+    }
+
+    #[test]
+    fn stacked_option_rect_flips_above_when_the_list_would_overflow_the_window() {
+        // The closed button sits near the bottom of the window, leaving no
+        // room for a 3*28=84px list below it.
+        let closed = Rect {
+            x0: 10,
+            y0: WIN_H - 40,
+            x1: 210,
+            y1: WIN_H - 12,
+        };
+        let r0 = stacked_option_rect(closed, 28, 3, 0, 200, WIN_W);
+        let r2 = stacked_option_rect(closed, 28, 3, 2, 200, WIN_W);
+        // The whole list sits above the closed button; the last option
+        // (bottommost) ends exactly where the button begins.
+        assert!(r0.y0 < closed.y0);
+        assert_eq!(r2.y1, closed.y0);
     }
 }
