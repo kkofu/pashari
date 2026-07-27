@@ -44,6 +44,8 @@ pub enum UserEvent {
     /// The update-check background thread's result (`Ok(None)` = checked
     /// and already latest, `Err` = check failed).
     UpdateCheckResult(Result<Option<ReleaseInfo>, String>),
+    /// The update-download background thread's result, ready to install.
+    UpdateReady(Result<update::UpdateArtifact, String>),
 }
 
 pub struct App {
@@ -211,6 +213,31 @@ impl App {
         }
         if let Some(settings) = self.settings.as_mut() {
             settings.set_update_check_result(&result);
+        }
+    }
+
+    /// Applies a downloaded update: installs it (which, on success, means
+    /// this process is about to exit and hand off to the new one — see
+    /// `update::relaunch_portable`/`relaunch_installer`) or reports the
+    /// failure back to the settings screen.
+    fn handle_update_ready(
+        &mut self,
+        result: Result<update::UpdateArtifact, String>,
+        event_loop: &ActiveEventLoop,
+    ) {
+        let install_result = match result {
+            Ok(update::UpdateArtifact::Portable(path)) => update::relaunch_portable(&path),
+            Ok(update::UpdateArtifact::Installer(path)) => update::relaunch_installer(&path),
+            Err(e) => Err(e),
+        };
+        match install_result {
+            Ok(()) => event_loop.exit(),
+            Err(e) => {
+                eprintln!("Update failed: {e}");
+                if let Some(settings) = self.settings.as_mut() {
+                    settings.set_update_install_error(e);
+                }
+            }
         }
     }
 
@@ -411,6 +438,7 @@ impl ApplicationHandler<UserEvent> for App {
         match event {
             UserEvent::ShowSettings => self.open_settings(event_loop),
             UserEvent::UpdateCheckResult(result) => self.handle_update_check_result(result),
+            UserEvent::UpdateReady(result) => self.handle_update_ready(result, event_loop),
         }
     }
 

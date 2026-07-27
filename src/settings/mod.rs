@@ -491,6 +491,13 @@ pub struct Settings {
     /// Handle for sending the manual-check background thread's result back
     /// (a clone of the App's own).
     update_proxy: EventLoopProxy<UserEvent>,
+    /// True while a download/install is in flight (from clicking "Update"),
+    /// to ignore a repeat click rather than starting a second one.
+    updating: bool,
+    /// The error from the last download/install attempt, if it failed
+    /// (shown in place of the "a new version is available" status text —
+    /// success has no visible state here since the app exits to relaunch).
+    update_install_error: Option<String>,
 }
 
 impl Settings {
@@ -648,6 +655,8 @@ impl Settings {
             update_available,
             update_check_status: None,
             update_proxy,
+            updating: false,
+            update_install_error: None,
         };
         // Relying solely on request_redraw() can leave the window blank on
         // Windows: the OS's initial paint can run before the first
@@ -692,6 +701,14 @@ impl Settings {
             Ok(None) => self.update_check_status = Some(UpdateCheckStatus::UpToDate),
             Err(_) => self.update_check_status = Some(UpdateCheckStatus::Failed),
         }
+        self.request_redraw();
+    }
+
+    /// Reports a failed download/install attempt (from `Btn::DownloadUpdate`),
+    /// clearing the in-progress flag so the button can be retried.
+    pub fn set_update_install_error(&mut self, msg: String) {
+        self.updating = false;
+        self.update_install_error = Some(msg);
         self.request_redraw();
     }
 
@@ -1340,6 +1357,8 @@ impl Settings {
         let record_strip_silent_audio = self.record_strip_silent_audio;
         let update_available = self.update_available.clone();
         let update_check_status = self.update_check_status;
+        let updating = self.updating;
+        let update_install_error = self.update_install_error.clone();
         let session_rows: Vec<(String, usize, usize, Rc<Vec<u32>>)> = self
             .sessions
             .iter()
@@ -1460,6 +1479,8 @@ impl Settings {
                     text,
                     &update_available,
                     update_check_status,
+                    updating,
+                    &update_install_error,
                     launch_at_startup,
                 ),
                 Tab::Capture => capture_tab::draw_capture(&mut canvas, t, dark, sw, &save_dirs),

@@ -52,6 +52,14 @@ jobs:
           name: pashari-${{ steps.version.outputs.version }}-windows-x64
           path: pashari-${{ steps.version.outputs.version }}-windows-x64.zip
 
+      # ポータブル版のアプリ内自動更新（src/update.rs）用に、exe単体も
+      # 別アセットとして公開する（zip解凍コードを実行時に持たずに済む）。
+      - name: exe単体もアーティファクトとして保存
+        uses: actions/upload-artifact@v4
+        with:
+          name: pashari-${{ steps.version.outputs.version }}-windows-x64-exe
+          path: target/release/pashari.exe
+
       # Inno Setup（ISCC.exe）をインストールする。windows-latest ランナーに
       # 入っている前提を置かず、常に明示インストールして再現性を優先する。
       - name: Inno Setup をインストール
@@ -80,4 +88,5 @@ jobs:
           files: |
             pashari-${{ steps.version.outputs.version }}-windows-x64.zip
             dist_installer/pashari-*-setup.exe
+            target/release/pashari.exe
           generate_release_notes: true

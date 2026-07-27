@@ -23,6 +23,12 @@ mod upload;
 use winit::event_loop::{ControlFlow, EventLoop};
 
 fn main() {
+    // If this process was just spawned by a portable self-update
+    // (`update::relaunch_portable`), waits for the old process to exit
+    // first — before anything else, so it doesn't race it for the
+    // single-instance Mutex below.
+    update::wait_for_relaunch_signal();
+
     store::init();
 
     // The `editor <png>` subcommand: opens the annotation editor as a
@@ -39,6 +45,9 @@ fn main() {
         println!("pashari は既に起動中です（Settings を表示します）");
         return;
     }
+    // Sole instance confirmed: tidy up a leftover `.exe.old` from a
+    // previous portable self-update, if any (best-effort, usually a no-op).
+    update::cleanup_old_exe();
 
     // The resident app: a single event loop drives hotkey waiting and the capture flow.
     let event_loop = match EventLoop::<app::UserEvent>::with_user_event().build() {

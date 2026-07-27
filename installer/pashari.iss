@@ -42,6 +42,11 @@ WizardStyle=modern
 OutputDir=..\dist_installer
 OutputBaseFilename=pashari-{#MyAppVersion}-setup
 UninstallDisplayIcon={app}\{#MyAppExeName}
+; src/single_instance.rs のMutex名と一致させる。アプリ内自動更新
+; （src/update.rs の relaunch_installer）がサイレントインストーラを
+; 起動する前に自分自身を終了するので、通常はこの待ち合わせは一瞬で
+; 終わる（インストーラがロックされたexeの上書きに失敗するのを防ぐ）。
+AppMutex=pashari-9c2f1b6e-single-instance
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -59,4 +64,7 @@ Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
+; skipifsilent を付けない: アプリ内自動更新はサイレントインストール
+; （/VERYSILENT）でこのインストーラを呼ぶので、更新後に自動起動する
+; にはここで再起動させる必要がある。
+Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall
