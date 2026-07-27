@@ -4,7 +4,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use super::{
     ACCENT, Btn, CONTENT_X, Settings, SettingsResult, TextCursor, apply_common_edit_key,
-    char_index_for_x, field, hover_tint_for, next_row_y_with_extra_gap, theme_colors,
+    char_index_for_x, field, hover_tint_for, next_row_y, next_row_y_with_extra_gap, theme_colors,
     x_for_char_index,
 };
 use crate::app::UserEvent;
@@ -31,11 +31,29 @@ fn filename_format_row_layout(sw: usize) -> Rect {
 const UPDATE_ROW_Y: usize =
     next_row_y_with_extra_gap(FILENAME_FORMAT_ROW_Y, FILENAME_FORMAT_ROW_H, 50);
 const UPDATE_ROW_H: usize = 26;
-const STARTUP_ROW_Y: usize = next_row_y_with_extra_gap(UPDATE_ROW_Y, UPDATE_ROW_H, 6);
+/// A second row below the check button for the check's outcome (a status
+/// message, and — once a newer version is found — a button to go get it).
+/// Always reserved, even before anything's been checked.
+const UPDATE_STATUS_ROW_Y: usize = next_row_y(UPDATE_ROW_Y, UPDATE_ROW_H);
+const UPDATE_STATUS_ROW_H: usize = 26;
+const STARTUP_ROW_Y: usize = next_row_y_with_extra_gap(UPDATE_STATUS_ROW_Y, UPDATE_STATUS_ROW_H, 6);
 const UPDATE_BTN_PAD: usize = 24;
 const UPDATE_BTN_W_FALLBACK: usize = 200;
+const DOWNLOAD_BTN_LABEL: &str = "Update";
+const DOWNLOAD_BTN_W_FALLBACK: usize = 100;
+const UPDATE_STATUS_GAP: usize = 16;
 
-/// Measured width of the version label + gap; the update button sits to
+/// Outcome of the last manual check made from this session, shown in the
+/// status row below the check button. `update_available` (a persistent,
+/// app-wide value) covers the "found a newer version" case on its own;
+/// this only needs to distinguish the other two.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum UpdateCheckStatus {
+    UpToDate,
+    Failed,
+}
+
+/// Measured width of the version label + gap; the check button sits to
 /// its right.
 fn update_label_x(text: Option<&TextRenderer>) -> usize {
     let label = format!("Version {}", update::CURRENT_VERSION);
@@ -45,20 +63,49 @@ fn update_label_x(text: Option<&TextRenderer>) -> usize {
             .unwrap_or(160)
 }
 
-fn update_button_label(update_available: Option<&ReleaseInfo>) -> String {
-    match update_available {
-        Some(info) => format!("Update available: v{} →", info.version),
-        None => "Check for updates".to_string(),
+const CHECK_BTN_LABEL: &str = "Check for updates";
+
+/// Sized to fit the label text, like the other buttons. The label is
+/// always "Check for updates" now — the outcome shows in the status row
+/// below instead of replacing this button's own label.
+fn update_button_rect(text: Option<&TextRenderer>) -> Rect {
+    let w = text
+        .map(|tr| tr.text_width(CHECK_BTN_LABEL, 15.0).ceil() as usize + UPDATE_BTN_PAD)
+        .unwrap_or(UPDATE_BTN_W_FALLBACK);
+    field(update_label_x(text), UPDATE_ROW_Y, w, UPDATE_ROW_H)
+}
+
+/// The status row's message, if there's anything to show yet (`None`
+/// before the first check this session).
+fn update_status_text(
+    update_available: Option<&ReleaseInfo>,
+    status: Option<UpdateCheckStatus>,
+) -> Option<String> {
+    if let Some(info) = update_available {
+        Some(format!("A new version is available: v{}", info.version))
+    } else {
+        match status {
+            Some(UpdateCheckStatus::UpToDate) => Some("You're up to date.".to_string()),
+            Some(UpdateCheckStatus::Failed) => {
+                Some("Update check failed. Try again later.".to_string())
+            }
+            None => None,
+        }
     }
 }
 
-/// Sized to fit the label text, like the other buttons.
-fn update_button_rect(text: Option<&TextRenderer>, update_available: Option<&ReleaseInfo>) -> Rect {
-    let label = update_button_label(update_available);
+/// The "Update" button, shown to the right of `status_label` once a newer
+/// version is known (`status_label` is whatever `update_status_text`
+/// returned, so the button starts right after that text).
+fn download_button_rect(text: Option<&TextRenderer>, status_label: &str) -> Rect {
+    let status_w = text
+        .map(|tr| tr.text_width(status_label, 15.0).ceil() as usize)
+        .unwrap_or(0);
     let w = text
-        .map(|tr| tr.text_width(&label, 15.0).ceil() as usize + UPDATE_BTN_PAD)
-        .unwrap_or(UPDATE_BTN_W_FALLBACK);
-    field(update_label_x(text), UPDATE_ROW_Y, w, UPDATE_ROW_H)
+        .map(|tr| tr.text_width(DOWNLOAD_BTN_LABEL, 15.0).ceil() as usize + UPDATE_BTN_PAD)
+        .unwrap_or(DOWNLOAD_BTN_W_FALLBACK);
+    let x0 = CONTENT_X + status_w + UPDATE_STATUS_GAP;
+    field(x0, UPDATE_STATUS_ROW_Y, w, UPDATE_STATUS_ROW_H)
 }
 
 /// Commit the buffer: trims and keeps it, or falls back to `current` if
@@ -74,17 +121,23 @@ fn commit_filename_format_value(buf: &str, current: &str) -> String {
 
 impl Settings {
     pub(super) fn buttons_general(&self, sw: usize) -> Vec<(Btn, Rect)> {
-        vec![
+        let mut v = vec![
             (Btn::FilenameFormatField, filename_format_row_layout(sw)),
-            (
-                Btn::CheckForUpdates,
-                update_button_rect(self.text.as_ref(), self.update_available.as_ref()),
-            ),
+            (Btn::CheckForUpdates, update_button_rect(self.text.as_ref())),
             (
                 Btn::LaunchAtStartup,
                 field(CONTENT_X, STARTUP_ROW_Y, 260, 30),
             ),
-        ]
+        ];
+        if let Some(info) = self.update_available.as_ref() {
+            let status_label = update_status_text(Some(info), self.update_check_status)
+                .expect("update_available is Some, so update_status_text always returns Some");
+            v.push((
+                Btn::DownloadUpdate,
+                download_button_rect(self.text.as_ref(), &status_label),
+            ));
+        }
+        v
     }
 
     pub(super) fn activate_general(&mut self, btn: Btn) -> Option<SettingsResult> {
@@ -94,18 +147,20 @@ impl Settings {
                 None
             }
             Btn::CheckForUpdates => {
-                match &self.update_available {
-                    // Already found a newer version: open its release page.
-                    Some(info) => crate::shell::open_url(&info.url),
-                    // Not checked yet: check now; the result comes back via
-                    // the proxy.
-                    None => {
-                        let proxy = self.update_proxy.clone();
-                        std::thread::spawn(move || {
-                            let result = update::check_latest();
-                            let _ = proxy.send_event(UserEvent::UpdateCheckResult(result));
-                        });
-                    }
+                // A fresh check always starts over, clearing any stale
+                // up-to-date/failed status from a previous click this session.
+                self.update_check_status = None;
+                let proxy = self.update_proxy.clone();
+                std::thread::spawn(move || {
+                    let result = update::check_latest();
+                    let _ = proxy.send_event(UserEvent::UpdateCheckResult(result));
+                });
+                self.request_redraw();
+                None
+            }
+            Btn::DownloadUpdate => {
+                if let Some(info) = &self.update_available {
+                    crate::shell::open_url(&info.url);
                 }
                 None
             }
@@ -231,6 +286,7 @@ pub(super) fn draw_general(
     filename_format_cursor: TextCursor,
     text: Option<&TextRenderer>,
     update_available: &Option<ReleaseInfo>,
+    update_check_status: Option<UpdateCheckStatus>,
     launch_at_startup: bool,
 ) {
     let (
@@ -343,29 +399,55 @@ pub(super) fn draw_general(
         DIM,
     );
 
-    // Same fill+centered-text look as other buttons.
-    let label = update_button_label(update_available.as_ref());
-    let btn_rect = update_button_rect(text, update_available.as_ref());
-    let base = if update_available.is_some() {
-        ACCENT
+    // "Check for updates" button: same fill+centered-text look as other
+    // buttons, always the same label now.
+    let btn_rect = update_button_rect(text);
+    let btn_color = if hover == Some(Btn::CheckForUpdates) {
+        hover_tint(BTN_BG)
     } else {
         BTN_BG
     };
-    let btn_color = if hover == Some(Btn::CheckForUpdates) {
-        hover_tint(base)
-    } else {
-        base
-    };
     canvas.fill(btn_rect, btn_color);
-    let label_text_color = if update_available.is_some() {
-        0x0011_1111
-    } else {
-        TEXT
-    };
-    let tw = t.text_width(&label, 15.0);
+    let tw = t.text_width(CHECK_BTN_LABEL, 15.0);
     let lx = btn_rect.x0 as f32 + ((btn_rect.x1 - btn_rect.x0) as f32 - tw) / 2.0;
     let btn_baseline = t.baseline_for_center((btn_rect.y0 + btn_rect.y1) as f32 / 2.0, 15.0);
-    t.draw(canvas, lx, btn_baseline, &label, 15.0, label_text_color);
+    t.draw(canvas, lx, btn_baseline, CHECK_BTN_LABEL, 15.0, TEXT);
+
+    // Status row: the last check's outcome, plus an "Update" button once a
+    // newer version is known.
+    if let Some(status_label) = update_status_text(update_available.as_ref(), update_check_status) {
+        let status_baseline =
+            t.baseline_for_center((UPDATE_STATUS_ROW_Y + UPDATE_STATUS_ROW_H / 2) as f32, 15.0);
+        t.draw(
+            canvas,
+            CONTENT_X as f32,
+            status_baseline,
+            &status_label,
+            15.0,
+            DIM,
+        );
+
+        if update_available.is_some() {
+            let dl_rect = download_button_rect(text, &status_label);
+            let dl_color = if hover == Some(Btn::DownloadUpdate) {
+                hover_tint(ACCENT)
+            } else {
+                ACCENT
+            };
+            canvas.fill(dl_rect, dl_color);
+            let dl_tw = t.text_width(DOWNLOAD_BTN_LABEL, 15.0);
+            let dl_lx = dl_rect.x0 as f32 + ((dl_rect.x1 - dl_rect.x0) as f32 - dl_tw) / 2.0;
+            let dl_baseline = t.baseline_for_center((dl_rect.y0 + dl_rect.y1) as f32 / 2.0, 15.0);
+            t.draw(
+                canvas,
+                dl_lx,
+                dl_baseline,
+                DOWNLOAD_BTN_LABEL,
+                15.0,
+                0x0011_1111,
+            );
+        }
+    }
 
     let (_, cb_rect) = buttons
         .iter()
@@ -413,7 +495,8 @@ pub(super) fn draw_general(
 
 #[cfg(test)]
 mod tests {
-    use super::commit_filename_format_value;
+    use super::{UpdateCheckStatus, commit_filename_format_value, update_status_text};
+    use crate::update::ReleaseInfo;
 
     #[test]
     fn commit_filename_format_value_trims_and_keeps_current_when_empty() {
@@ -424,5 +507,39 @@ mod tests {
         assert_eq!(commit_filename_format_value("  spaced  ", "old"), "spaced");
         assert_eq!(commit_filename_format_value("", "old"), "old");
         assert_eq!(commit_filename_format_value("   ", "old"), "old");
+    }
+
+    #[test]
+    fn update_status_text_is_none_before_any_check() {
+        assert_eq!(update_status_text(None, None), None);
+    }
+
+    #[test]
+    fn update_status_text_reports_a_newer_version_regardless_of_status() {
+        let info = ReleaseInfo {
+            version: "9.9.9".to_string(),
+            url: "https://example.test/release".to_string(),
+        };
+        let text = update_status_text(Some(&info), None).unwrap();
+        assert!(text.contains("9.9.9"));
+        // Takes priority even if a stale status is still set (shouldn't
+        // normally happen together, but `update_available` wins either way).
+        let text_with_status =
+            update_status_text(Some(&info), Some(UpdateCheckStatus::Failed)).unwrap();
+        assert!(text_with_status.contains("9.9.9"));
+    }
+
+    #[test]
+    fn update_status_text_reports_up_to_date_and_failed_when_no_newer_version() {
+        assert!(
+            update_status_text(None, Some(UpdateCheckStatus::UpToDate))
+                .unwrap()
+                .contains("up to date")
+        );
+        assert!(
+            update_status_text(None, Some(UpdateCheckStatus::Failed))
+                .unwrap()
+                .contains("failed")
+        );
     }
 }

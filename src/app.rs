@@ -201,16 +201,16 @@ impl App {
     /// check and a manual check from the settings screen). For
     /// `Ok(None)`/`Err`, keeps any already-found new version as-is.
     fn handle_update_check_result(&mut self, result: Result<Option<ReleaseInfo>, String>) {
-        match result {
+        match &result {
             Ok(Some(info)) => {
-                println!("新しいバージョンが見つかりました: v{}", info.version);
+                println!("Found a new version: v{}", info.version);
                 self.update_available = Some(info.clone());
-                if let Some(settings) = self.settings.as_mut() {
-                    settings.set_update_available(Some(info));
-                }
             }
-            Ok(None) => println!("pashari は最新版です（v{}）", update::CURRENT_VERSION),
-            Err(e) => eprintln!("アップデート確認に失敗: {e}"),
+            Ok(None) => println!("pashari is up to date (v{})", update::CURRENT_VERSION),
+            Err(e) => eprintln!("Update check failed: {e}"),
+        }
+        if let Some(settings) = self.settings.as_mut() {
+            settings.set_update_check_result(&result);
         }
     }
 

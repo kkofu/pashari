@@ -32,6 +32,7 @@ use crate::store::UploaderProfile;
 use crate::ui::text::TextRenderer;
 use crate::ui::{Canvas, PickerPart, Rect};
 use crate::update::ReleaseInfo;
+use general::UpdateCheckStatus;
 use hotkeys_tab::{HOTKEY_ROWS, LocalAction, build_hotkey, hotkey_content_height, hotkey_viewport};
 use text_field::{
     TextCursor, apply_common_edit_key, byte_index_for_char_count, char_index_for_x,
@@ -141,10 +142,11 @@ impl UploadField {
 enum Btn {
     Tab(Tab),
     Capture,
-    /// The General tab's update-check row: "Check for updates" (click to
-    /// check manually) if unchecked, or "Update available" (click to open
-    /// the release page) once one is found.
+    /// The General tab's "Check for updates" button; always triggers a
+    /// manual check (see `Btn::DownloadUpdate` for opening the release page).
     CheckForUpdates,
+    /// Shown next to the status text once a newer version is known; opens its release page.
+    DownloadUpdate,
     Browse(SaveKind),
     DefaultDir(SaveKind),
     BrowseEditor,
@@ -452,8 +454,13 @@ pub struct Settings {
     // --- General tab (update check) ---
     /// The newer version found, if any (`None` = not checked yet, or
     /// checked and already up to date). Synced from the App's state via
-    /// `set_update_available` whenever it changes.
+    /// `set_update_check_result` whenever it changes.
     update_available: Option<ReleaseInfo>,
+    /// The outcome of the last manual check made from this session, for
+    /// the cases `update_available` can't represent on its own (already up
+    /// to date, or the check failed). Cleared when a new check starts, and
+    /// whenever a newer version is found (`update_available` covers that case instead).
+    update_check_status: Option<UpdateCheckStatus>,
     /// Handle for sending the manual-check background thread's result back
     /// (a clone of the App's own).
     update_proxy: EventLoopProxy<UserEvent>,
@@ -598,6 +605,7 @@ impl Settings {
             pressed: None,
             text: TextRenderer::load(),
             update_available,
+            update_check_status: None,
             update_proxy,
         };
         // Relying solely on request_redraw() can leave the window blank on
@@ -631,10 +639,18 @@ impl Settings {
         }
     }
 
-    /// Syncs the open settings window's display when the App's update-check
-    /// result changes.
-    pub fn set_update_available(&mut self, info: Option<ReleaseInfo>) {
-        self.update_available = info;
+    /// Syncs the open settings window's display with an update-check
+    /// result (from either the automatic startup check or a manual one
+    /// triggered from this window).
+    pub fn set_update_check_result(&mut self, result: &Result<Option<ReleaseInfo>, String>) {
+        match result {
+            Ok(Some(info)) => {
+                self.update_available = Some(info.clone());
+                self.update_check_status = None;
+            }
+            Ok(None) => self.update_check_status = Some(UpdateCheckStatus::UpToDate),
+            Err(_) => self.update_check_status = Some(UpdateCheckStatus::Failed),
+        }
         self.request_redraw();
     }
 
@@ -1116,9 +1132,10 @@ impl Settings {
             Btn::SessionLimitField | Btn::SessionLimitStep(_) | Btn::BrowseEditor => {
                 self.activate_editor(btn)
             }
-            Btn::FilenameFormatField | Btn::CheckForUpdates | Btn::LaunchAtStartup => {
-                self.activate_general(btn)
-            }
+            Btn::FilenameFormatField
+            | Btn::CheckForUpdates
+            | Btn::DownloadUpdate
+            | Btn::LaunchAtStartup => self.activate_general(btn),
             Btn::MaxResolutionField(_)
             | Btn::BitrateDropdown
             | Btn::BitrateOption(_)
@@ -1268,6 +1285,7 @@ impl Settings {
         let sample_rate_dropdown_open = self.sample_rate_dropdown_open;
         let record_strip_silent_audio = self.record_strip_silent_audio;
         let update_available = self.update_available.clone();
+        let update_check_status = self.update_check_status;
         let session_rows: Vec<(String, usize, usize, Rc<Vec<u32>>)> = self
             .sessions
             .iter()
@@ -1369,6 +1387,7 @@ impl Settings {
                     filename_format_cursor,
                     text,
                     &update_available,
+                    update_check_status,
                     launch_at_startup,
                 ),
                 Tab::Capture => capture_tab::draw_capture(&mut canvas, t, dark, sw, &save_dirs),
@@ -1471,6 +1490,7 @@ impl Settings {
                         | Btn::SampleRateOption(_)
                         | Btn::StripSilentAudio
                         | Btn::CheckForUpdates
+                        | Btn::DownloadUpdate
                         | Btn::CaptureLocal(_)
                         | Btn::Capture
                         | Btn::ResetLocal(_)
@@ -1520,6 +1540,7 @@ impl Settings {
                     | Btn::SampleRateOption(_)
                     | Btn::StripSilentAudio
                     | Btn::CheckForUpdates
+                    | Btn::DownloadUpdate
                     | Btn::CaptureLocal(_)
                     | Btn::Capture
                     | Btn::ResetLocal(_)
