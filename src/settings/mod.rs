@@ -1067,8 +1067,12 @@ impl Settings {
                 // handling (same "outside click just closes" behavior as
                 // the editor's color picker).
                 if let Some(target) = self.picker_target {
-                    let (_popup, sv_rect, hue_rect) =
-                        click_color_picker_geom(self.size.0, self.text.as_ref(), target);
+                    let (_popup, sv_rect, hue_rect) = click_color_picker_geom(
+                        self.size.0,
+                        self.size.1,
+                        self.text.as_ref(),
+                        target,
+                    );
                     if inside(sv_rect, cx, cy) {
                         self.picker_drag = Some(PickerPart::Sv);
                         self.apply_click_color_picker(cx, cy);
@@ -1497,7 +1501,6 @@ impl Settings {
                     record_show_click_ripple,
                     record_click_color_left,
                     record_click_color_right,
-                    picker,
                     picker_target,
                     record_bitrate_mbps,
                     bitrate_dropdown_open,
@@ -1662,6 +1665,19 @@ impl Settings {
                 let label_color = if *btn == Btn::Save { 0x00FF_FFFF } else { TEXT };
                 t.draw(&mut canvas, lx, baseline, label, 15.0, label_color);
             }
+
+            // Drawn last, after the Save/Cancel bar, so this modal popup
+            // renders on top of it instead of being covered (it's a no-op
+            // when no picker is open).
+            video::draw_click_color_picker(
+                &mut canvas,
+                sw,
+                sh,
+                text,
+                picker,
+                picker_target,
+                PICK_BG,
+            );
         }
 
         let _ = buf.present();

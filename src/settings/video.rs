@@ -103,9 +103,15 @@ fn right_click_color_swatch_rect(sw: usize, text: Option<&TextRenderer>) -> Rect
     )
 }
 
-/// Popup/SV-square/hue-bar rects, positioned just below the target swatch.
+/// Popup/SV-square/hue-bar rects. Normally sits just below the target
+/// swatch, left-aligned to it — but flips above instead if it wouldn't
+/// fit before the window bottom, and is clamped so it never runs past
+/// the window's right edge (mirrors `stacked_option_rect`'s below/above
+/// and left/right fallback, for the same reason: this row sits fairly
+/// low in the tab, so the popup can easily run past the window otherwise).
 pub(super) fn click_color_picker_geom(
     sw: usize,
+    sh: usize,
     text: Option<&TextRenderer>,
     target: ClickColorTarget,
 ) -> (Rect, Rect, Rect) {
@@ -113,14 +119,18 @@ pub(super) fn click_color_picker_geom(
         ClickColorTarget::Left => left_click_color_swatch_rect(sw, text),
         ClickColorTarget::Right => right_click_color_swatch_rect(sw, text),
     };
-    let px = swatch.x0;
-    let py = swatch.y1 + 4;
-    let popup = field(
-        px,
-        py,
-        PICK_SV + 2 * PICK_PAD,
-        PICK_SV + PICK_HUE_H + 3 * PICK_PAD,
-    );
+    let popup_w = PICK_SV + 2 * PICK_PAD;
+    let popup_h = PICK_SV + PICK_HUE_H + 3 * PICK_PAD;
+
+    let below = swatch.y1 + 4;
+    let py = if below + popup_h <= sh {
+        below
+    } else {
+        swatch.y0.saturating_sub(popup_h + 4)
+    };
+    let px = swatch.x0.min(sw.saturating_sub(popup_w));
+
+    let popup = field(px, py, popup_w, popup_h);
     let sv = field(px + PICK_PAD, py + PICK_PAD, PICK_SV, PICK_SV);
     let hue = field(px + PICK_PAD, sv.y1 + PICK_PAD, PICK_SV, PICK_HUE_H);
     (popup, sv, hue)
@@ -621,7 +631,7 @@ impl Settings {
             return;
         };
         let (_, sv_rect, hue_rect) =
-            click_color_picker_geom(self.size.0, self.text.as_ref(), target);
+            click_color_picker_geom(self.size.0, self.size.1, self.text.as_ref(), target);
         let (nh, ns, nv) = match part {
             PickerPart::Sv => {
                 let ns = ((wx - sv_rect.x0 as f64) / PICK_SV as f64).clamp(0.0, 1.0) as f32;
@@ -658,7 +668,6 @@ pub(super) fn draw_video(
     record_show_click_ripple: bool,
     record_click_color_left: u32,
     record_click_color_right: u32,
-    picker: Option<(f32, f32, f32)>,
     picker_target: Option<ClickColorTarget>,
     record_bitrate_mbps: u32,
     bitrate_dropdown_open: bool,
@@ -1240,63 +1249,79 @@ pub(super) fn draw_video(
         };
         canvas.stroke(list_rect, 0x0080_8080);
     }
+}
 
-    // Color picker popup, drawn last so it overlays everything else in
-    // the tab when open.
-    if let (Some((h, s, v)), Some(target)) = (picker, picker_target) {
-        let (popup, sv_rect, hue_rect) = click_color_picker_geom(sw, text, target);
-        canvas.fill(popup, PICK_BG);
-        canvas.stroke(popup, 0x0080_8080);
+/// Draws the color picker popup (if open). Called separately from
+/// `draw_video`, *after* the window's Save/Cancel bar — this is a modal
+/// popup, so it needs to draw on top of everything else in the window,
+/// not just the rest of the tab (`Settings::draw()`'s per-tab dispatch
+/// runs before the shared Save/Cancel button loop).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn draw_click_color_picker(
+    canvas: &mut Canvas,
+    sw: usize,
+    sh: usize,
+    text: Option<&TextRenderer>,
+    picker: Option<(f32, f32, f32)>,
+    picker_target: Option<ClickColorTarget>,
+    pick_bg: u32,
+) {
+    let (Some((h, s, v)), Some(target)) = (picker, picker_target) else {
+        return;
+    };
+    let (popup, sv_rect, hue_rect) = click_color_picker_geom(sw, sh, text, target);
+    canvas.fill(popup, pick_bg);
+    canvas.stroke(popup, 0x0080_8080);
 
-        // These per-pixel gradients bypass `Canvas`'s auto-scaling shape
-        // methods, so scale `sv_rect`/`hue_rect` to physical pixels here
-        // (matching `Canvas::fill`/`stroke`'s own rounding) and resample
-        // the gradient once per physical pixel — sharper at high DPI
-        // rather than nearest-neighbor blocky.
-        let scaled = |r: Rect| {
-            let s = |v: usize| ((v as f64) * canvas.scale).round() as usize;
-            Rect {
-                x0: s(r.x0),
-                y0: s(r.y0),
-                x1: s(r.x1),
-                y1: s(r.y1),
-            }
-        };
-        let sv_p = scaled(sv_rect);
-        let hue_p = scaled(hue_rect);
+    // These per-pixel gradients bypass `Canvas`'s auto-scaling shape
+    // methods, so scale `sv_rect`/`hue_rect` to physical pixels here
+    // (matching `Canvas::fill`/`stroke`'s own rounding) and resample
+    // the gradient once per physical pixel — sharper at high DPI
+    // rather than nearest-neighbor blocky.
+    let scaled = |r: Rect| {
+        let s = |v: usize| ((v as f64) * canvas.scale).round() as usize;
+        Rect {
+            x0: s(r.x0),
+            y0: s(r.y0),
+            x1: s(r.x1),
+            y1: s(r.y1),
+        }
+    };
+    let sv_p = scaled(sv_rect);
+    let hue_p = scaled(hue_rect);
 
-        for yy in 0..sv_p.height() {
-            let vv = 1.0 - yy as f32 / sv_p.height().max(1) as f32;
-            for xx in 0..sv_p.width() {
-                let ss = xx as f32 / sv_p.width().max(1) as f32;
-                canvas.set(sv_p.x0 + xx, sv_p.y0 + yy, hsv_to_rgb(h, ss, vv));
-            }
+    for yy in 0..sv_p.height() {
+        let vv = 1.0 - yy as f32 / sv_p.height().max(1) as f32;
+        for xx in 0..sv_p.width() {
+            let ss = xx as f32 / sv_p.width().max(1) as f32;
+            canvas.set(sv_p.x0 + xx, sv_p.y0 + yy, hsv_to_rgb(h, ss, vv));
         }
-        marker(
-            canvas,
-            sv_rect.x0 as i64 + (s * PICK_SV as f32) as i64,
-            sv_rect.y0 as i64 + ((1.0 - v) * PICK_SV as f32) as i64,
-        );
-        for xx in 0..hue_p.width() {
-            let col = hsv_to_rgb(xx as f32 / hue_p.width().max(1) as f32 * 360.0, 1.0, 1.0);
-            for yy in 0..hue_p.height() {
-                canvas.set(hue_p.x0 + xx, hue_p.y0 + yy, col);
-            }
+    }
+    marker(
+        canvas,
+        sv_rect.x0 as i64 + (s * PICK_SV as f32) as i64,
+        sv_rect.y0 as i64 + ((1.0 - v) * PICK_SV as f32) as i64,
+    );
+    for xx in 0..hue_p.width() {
+        let col = hsv_to_rgb(xx as f32 / hue_p.width().max(1) as f32 * 360.0, 1.0, 1.0);
+        for yy in 0..hue_p.height() {
+            canvas.set(hue_p.x0 + xx, hue_p.y0 + yy, col);
         }
-        let hx = hue_p.x0 as i64 + (h / 360.0 * hue_p.width() as f32) as i64;
-        for yy in 0..hue_p.height() as i64 {
-            canvas.set_i(hx, hue_p.y0 as i64 + yy, 0x00FF_FFFF);
-            canvas.set_i(hx - 1, hue_p.y0 as i64 + yy, 0x0000_0000);
-        }
+    }
+    let hx = hue_p.x0 as i64 + (h / 360.0 * hue_p.width() as f32) as i64;
+    for yy in 0..hue_p.height() as i64 {
+        canvas.set_i(hx, hue_p.y0 as i64 + yy, 0x00FF_FFFF);
+        canvas.set_i(hx - 1, hue_p.y0 as i64 + yy, 0x0000_0000);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        VIDEO_VALUE_W, audio_device_display_name, audio_dropdown_option_w,
+        ClickColorTarget, VIDEO_VALUE_W, audio_device_display_name, audio_dropdown_option_w,
         audio_input_dropdown_rect, audio_output_dropdown_rect, bitrate_dropdown_rect,
-        parse_max_resolution, stacked_option_rect,
+        click_color_picker_geom, left_click_color_swatch_rect, parse_max_resolution,
+        stacked_option_rect,
     };
     use crate::settings::{WIN_H, WIN_W};
     use crate::ui::Rect;
@@ -1402,5 +1427,36 @@ mod tests {
         // (bottommost) ends exactly where the button begins.
         assert!(r0.y0 < closed.y0);
         assert_eq!(r2.y1, closed.y0);
+    }
+
+    #[test]
+    fn click_color_picker_geom_sits_below_the_swatch_when_it_fits() {
+        let swatch = left_click_color_swatch_rect(WIN_W, None);
+        // Comfortably more than the popup needs below the swatch (unlike
+        // the real WIN_H, which the swatch's actual row sits too low
+        // in the tab to leave room in — see the flip test below).
+        let popup_h_ish = 128 + 14 + 3 * 8; // PICK_SV + PICK_HUE_H + 3*PICK_PAD
+        let sh = swatch.y1 + 4 + popup_h_ish + 100;
+        let (popup, _, _) = click_color_picker_geom(WIN_W, sh, None, ClickColorTarget::Left);
+        assert_eq!(popup.y0, swatch.y1 + 4);
+    }
+
+    #[test]
+    fn click_color_picker_geom_flips_above_when_it_would_overflow_the_window_bottom() {
+        let swatch = left_click_color_swatch_rect(WIN_W, None);
+        // Just short of the room the popup needs below the swatch.
+        let popup_h_ish = 128 + 14 + 3 * 8; // PICK_SV + PICK_HUE_H + 3*PICK_PAD
+        let sh = swatch.y1 + 4 + popup_h_ish - 1;
+        let (popup, _, _) = click_color_picker_geom(WIN_W, sh, None, ClickColorTarget::Left);
+        assert_eq!(popup.y1, swatch.y0 - 4);
+    }
+
+    #[test]
+    fn click_color_picker_geom_clamps_within_the_windows_right_edge() {
+        let swatch = left_click_color_swatch_rect(WIN_W, None);
+        // A window narrower than the swatch's own x0 + the popup's width.
+        let sw = swatch.x0 + 50;
+        let (popup, _, _) = click_color_picker_geom(sw, WIN_H, None, ClickColorTarget::Left);
+        assert!(popup.x1 <= sw);
     }
 }
