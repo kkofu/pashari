@@ -19,7 +19,7 @@
 //! moved to pick any pixel precisely even while zoomed in.
 
 mod menu;
-mod snap;
+pub(crate) mod snap;
 mod view;
 
 use std::num::NonZeroU32;
@@ -32,11 +32,14 @@ use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{
     DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent,
 };
-use winit::event_loop::{ActiveEventLoop, ControlFlow};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoopProxy};
 use winit::keyboard::{Key, NamedKey};
 use winit::platform::windows::WindowAttributesExtWindows;
 use winit::window::{CursorIcon, Window, WindowId, WindowLevel};
 
+use raw_window_handle::HasWindowHandle;
+
+use crate::app::UserEvent;
 use crate::capture;
 use crate::export::Shot;
 use crate::localkey::LocalKey;
@@ -545,6 +548,14 @@ impl SolidWindow {
         if let Ok(mut buf) = self.surface.buffer_mut() {
             buf.fill(self.color);
             let _ = buf.present();
+            // Same reasoning as `Overlay::draw()`'s own `DwmFlush` call:
+            // this window's position/size changes on every cursor move
+            // while dragging a selection edge, so without waiting for the
+            // vblank here too, the border can visibly tear right where
+            // it's most noticeable — the selection outline itself.
+            // SAFETY: a DWM global function call taking no arguments that
+            // changes no other state.
+            let _ = unsafe { windows::Win32::Graphics::Dwm::DwmFlush() };
         }
     }
 
@@ -2203,16 +2214,65 @@ fn next_fps(current: u32, presets: &[u32]) -> u32 {
 }
 
 impl Overlay {
-    /// Captures the freeze image and starts an overlay session (called by App on a hotkey).
+    /// Captures the freeze image and starts an overlay session (called by
+    /// App on a hotkey). `self.snapshot` starts `None` — App follows up
+    /// with `spawn_snapshot_capture` once the window exists, since that
+    /// enumeration can't safely run synchronously here (see its doc).
     pub(crate) fn start(event_loop: &ActiveEventLoop) -> Result<Self, Box<dyn std::error::Error>> {
         let frozen = Frozen::capture(event_loop)?;
-        // Enumerates top-level windows for auto region snapping before
-        // creating the overlay window, so it doesn't include itself as a candidate.
-        let snapshot = snap::Snapshot::capture(frozen.origin, (frozen.width, frozen.height));
         let mut overlay = Overlay::new(frozen);
-        overlay.snapshot = Some(snapshot);
         overlay.create_overlay_window(event_loop);
         Ok(overlay)
+    }
+
+    /// Enumerates top-level windows for auto region snapping on a
+    /// background thread, applying the result via `set_snapshot` once
+    /// ready (dragging a selection works fine without it in the
+    /// meantime — this only affects hover-to-snap). Has to run off the
+    /// main thread: `snap::Snapshot::capture` queries every visible
+    /// top-level window via Win32/DWM calls, and if any one of them
+    /// belongs to a process that's slow to respond (a hung or heavily
+    /// loaded app — not unusual to have at least one open), a single
+    /// query can block for a long time. Since this whole app is
+    /// single-threaded/event-loop-driven, doing that synchronously while
+    /// starting a capture session would freeze the entire app, not just
+    /// the snap feature — including the overlay window itself, which
+    /// wouldn't even get to paint until the call returns.
+    pub(crate) fn spawn_snapshot_capture(&self, proxy: EventLoopProxy<UserEvent>) {
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        let Ok(handle) = window.window_handle() else {
+            return;
+        };
+        let hwnd = match handle.as_raw() {
+            raw_window_handle::RawWindowHandle::Win32(h) => h.hwnd.get(),
+            _ => return,
+        };
+        let origin = self.frozen.origin;
+        let size = (self.frozen.width, self.frozen.height);
+        std::thread::spawn(move || {
+            let snapshot = snap::Snapshot::capture(origin, size, Some(hwnd));
+            let _ = proxy.send_event(UserEvent::SnapshotReady(hwnd, snapshot));
+        });
+    }
+
+    /// Applies a snapshot captured by `spawn_snapshot_capture`.
+    pub(crate) fn set_snapshot(&mut self, snapshot: snap::Snapshot) {
+        self.snapshot = Some(snapshot);
+    }
+
+    /// Whether `hwnd` (from a `UserEvent::SnapshotReady`) is this
+    /// overlay's own main window — used to route the result to the right
+    /// session when more than one can be active (`App`'s `session`/`shot_session`).
+    pub(crate) fn owns_hwnd(&self, hwnd: isize) -> bool {
+        let Some(window) = self.window.as_ref() else {
+            return false;
+        };
+        let Ok(handle) = window.window_handle() else {
+            return false;
+        };
+        matches!(handle.as_raw(), raw_window_handle::RawWindowHandle::Win32(h) if h.hwnd.get() == hwnd)
     }
 
     /// Whether an action has been committed / canceled.

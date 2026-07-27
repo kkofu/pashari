@@ -22,7 +22,7 @@ use winit::window::WindowId;
 use crate::editor;
 use crate::export;
 use crate::hotkey;
-use crate::overlay::{Action, Outcome, Overlay};
+use crate::overlay::{self, Action, Outcome, Overlay};
 use crate::settings::{SavedSettings, Settings, SettingsResult};
 use crate::shell;
 use crate::startup;
@@ -46,6 +46,10 @@ pub enum UserEvent {
     UpdateCheckResult(Result<Option<ReleaseInfo>, String>),
     /// The update-download background thread's result, ready to install.
     UpdateReady(Result<update::UpdateArtifact, String>),
+    /// The background window-snapshot capture's result (see
+    /// `Overlay::spawn_snapshot_capture`), tagged with the owning
+    /// overlay's HWND so it's applied to the right session.
+    SnapshotReady(isize, overlay::snap::Snapshot),
 }
 
 pub struct App {
@@ -150,7 +154,10 @@ impl App {
     fn start_session(&mut self, event_loop: &ActiveEventLoop) {
         drain_hotkeys();
         match Overlay::start(event_loop) {
-            Ok(session) => self.session = Some(session),
+            Ok(session) => {
+                session.spawn_snapshot_capture(self.proxy.clone());
+                self.session = Some(session);
+            }
             Err(e) => eprintln!("キャプチャ開始に失敗: {e}"),
         }
     }
@@ -171,6 +178,7 @@ impl App {
         match Overlay::start(event_loop) {
             Ok(mut session) => {
                 session.set_allow_record(false);
+                session.spawn_snapshot_capture(self.proxy.clone());
                 self.shot_session = Some(session);
             }
             Err(e) => eprintln!("スクショ用セッション開始に失敗: {e}"),
@@ -439,6 +447,16 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::ShowSettings => self.open_settings(event_loop),
             UserEvent::UpdateCheckResult(result) => self.handle_update_check_result(result),
             UserEvent::UpdateReady(result) => self.handle_update_ready(result, event_loop),
+            UserEvent::SnapshotReady(hwnd, snapshot) => {
+                // Whichever session (if either is still around) owns this
+                // hwnd; dropped silently if the session already ended
+                // before the background enumeration finished.
+                if let Some(s) = self.session.as_mut().filter(|s| s.owns_hwnd(hwnd)) {
+                    s.set_snapshot(snapshot);
+                } else if let Some(s) = self.shot_session.as_mut().filter(|s| s.owns_hwnd(hwnd)) {
+                    s.set_snapshot(snapshot);
+                }
+            }
         }
     }
 

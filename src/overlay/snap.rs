@@ -56,7 +56,7 @@ struct SnapWindow {
 }
 
 /// The list of top-level windows at capture start (front-to-back Z order).
-pub(super) struct Snapshot {
+pub(crate) struct Snapshot {
     windows: Vec<SnapWindow>,
     origin: (i32, i32),
     img_w: i64,
@@ -68,6 +68,8 @@ struct Collector {
     origin: (i32, i32),
     img_w: i64,
     img_h: i64,
+    /// The overlay's own window, excluded from the candidate list.
+    exclude_hwnd: Option<isize>,
     windows: Vec<SnapWindow>,
 }
 
@@ -76,14 +78,21 @@ impl Snapshot {
     /// Returns an empty snapshot if enumeration fails (snapping is simply
     /// disabled; existing behavior is preserved).
     ///
-    /// Must be called **before** creating the overlay window (so it
-    /// doesn't include itself as a candidate).
-    pub(super) fn capture(origin: (i32, i32), img_size: (usize, usize)) -> Self {
+    /// Runs on a background thread (see `Overlay::spawn_snapshot_capture`),
+    /// so unlike before, the overlay's own window can already exist by the
+    /// time this runs — `exclude_hwnd` (its HWND) keeps it out of the
+    /// candidate list instead of relying on call-order to guarantee that.
+    pub(super) fn capture(
+        origin: (i32, i32),
+        img_size: (usize, usize),
+        exclude_hwnd: Option<isize>,
+    ) -> Self {
         let (img_w, img_h) = (img_size.0 as i64, img_size.1 as i64);
         let mut collector = Collector {
             origin,
             img_w,
             img_h,
+            exclude_hwnd,
             windows: Vec::new(),
         };
         // SAFETY: EnumWindows just calls the callback synchronously for
@@ -148,6 +157,9 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
     // capture(). Enumeration is synchronous and single-threaded, so
     // exclusive dereferencing is safe.
     let collector = unsafe { &mut *(lparam.0 as *mut Collector) };
+    if collector.exclude_hwnd == Some(hwnd.0 as isize) {
+        return TRUE;
+    }
     if let Some(win) =
         unsafe { evaluate_window(hwnd, collector.origin, collector.img_w, collector.img_h) }
     {
