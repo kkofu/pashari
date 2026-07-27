@@ -7,6 +7,22 @@
 //! native folder picker (`rfd`) via "Browse...". Save applies immediately;
 //! Cancel discards. The Hotkeys tab scrolls with the mouse wheel since it
 //! has many rows.
+//!
+//! Every layout constant across this module and its per-tab submodules is
+//! a fixed logical-pixel count, unscaled by the monitor's DPI — otherwise,
+//! since winit makes this a per-monitor-DPI-aware process, the window
+//! would stay pixel-for-pixel identical at any DPI and look shrunk
+//! relative to the rest of a scaled-up desktop. Rather than threading a
+//! scale factor through all of them, `draw()` builds one `Canvas` wrapping
+//! the window's real physical-pixel surface directly (see
+//! `physical_size`/`scale`), and `Canvas`'s own shape-drawing methods
+//! (`fill`/`line`/`fill_circle`/`blit_scaled`/... — see `src/ui/mod.rs`)
+//! scale each shape's logical coordinates to physical ones before drawing
+//! it, so every existing call site in this module and its submodules
+//! keeps passing the same fixed logical values unchanged. Text goes
+//! through the same scaling inside `TextRenderer::draw` (`src/ui/text.rs`)
+//! — since it rasterizes an actual vector font, this keeps glyphs crisp at
+//! any DPI rather than nearest-neighbor magnified.
 
 mod capture_tab;
 mod editor_tab;
@@ -20,7 +36,7 @@ mod video;
 use std::num::NonZeroU32;
 use std::rc::Rc;
 
-use winit::dpi::{PhysicalPosition, PhysicalSize};
+use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::keyboard::{ModifiersState, NamedKey, PhysicalKey};
@@ -286,7 +302,18 @@ pub struct Settings {
     window: Option<Rc<Window>>,
     _context: Option<softbuffer::Context<Rc<Window>>>,
     surface: Option<softbuffer::Surface<Rc<Window>, Rc<Window>>>,
+    /// The logical (DPI-independent) window size, used for all layout and
+    /// hit-testing — unchanged in meaning from before DPI support was
+    /// added, so existing call sites don't need to care about scale.
     size: (usize, usize),
+    /// The window's actual physical pixel size (matches the softbuffer
+    /// surface); only used for the final upscale blit in `draw()`.
+    physical_size: (usize, usize),
+    /// The window's current DPI scale factor (`window.scale_factor()`),
+    /// used to convert between logical (`size`) and physical
+    /// (`physical_size`) — see the module doc for why this window scales
+    /// the whole rendered frame rather than every layout constant.
+    scale: f64,
     /// Follows the system light/dark setting automatically (no manual toggle).
     dark: bool,
 
@@ -485,21 +512,27 @@ impl Settings {
         let mut audio_input_devices = vec![String::new()];
         audio_input_devices.extend(crate::capture::audio_input_device_names());
 
-        let (mx, my) = event_loop
+        // Centers using the primary monitor's own scale factor, since
+        // `with_inner_size` below requests a *logical* size — the window
+        // will actually occupy roughly `WIN_W/WIN_H * scale` physical
+        // pixels, not `WIN_W`/`WIN_H` directly.
+        let (mx, my, primary_scale) = event_loop
             .primary_monitor()
             .map(|m| {
                 let s = m.size();
-                (s.width as i32, s.height as i32)
+                (s.width as i32, s.height as i32, m.scale_factor())
             })
-            .unwrap_or((1280, 720));
-        let pos = PhysicalPosition::new((mx - WIN_W as i32) / 2, (my - WIN_H as i32) / 2);
+            .unwrap_or((1280, 720, 1.0));
+        let win_w_phys = (WIN_W as f64 * primary_scale).round() as i32;
+        let win_h_phys = (WIN_H as f64 * primary_scale).round() as i32;
+        let pos = PhysicalPosition::new((mx - win_w_phys) / 2, (my - win_h_phys) / 2);
 
         let attrs = Window::default_attributes()
             .with_title("pashari Settings")
             .with_resizable(true)
-            .with_min_inner_size(PhysicalSize::new(WIN_W as u32, WIN_H as u32))
+            .with_min_inner_size(LogicalSize::new(WIN_W as f64, WIN_H as f64))
             .with_position(pos)
-            .with_inner_size(PhysicalSize::new(WIN_W as u32, WIN_H as u32));
+            .with_inner_size(LogicalSize::new(WIN_W as f64, WIN_H as f64));
         let window = Rc::new(
             event_loop
                 .create_window(attrs)
@@ -510,11 +543,17 @@ impl Settings {
         let mut surface =
             softbuffer::Surface::new(&context, window.clone()).expect("settings surface");
         let s = window.inner_size();
-        let (sw, sh) = (s.width.max(1), s.height.max(1));
+        let (pw, ph) = (s.width.max(1), s.height.max(1));
         surface
-            .resize(NonZeroU32::new(sw).unwrap(), NonZeroU32::new(sh).unwrap())
+            .resize(NonZeroU32::new(pw).unwrap(), NonZeroU32::new(ph).unwrap())
             .expect("settings resize");
         window.request_redraw();
+
+        let scale = window.scale_factor();
+        let size = (
+            ((pw as f64) / scale).round().max(1.0) as usize,
+            ((ph as f64) / scale).round().max(1.0) as usize,
+        );
 
         // Uses the OS theme setting as the initial value; falls back to dark
         // (the previous default look) where it can't be read.
@@ -524,7 +563,9 @@ impl Settings {
             window: Some(window),
             _context: Some(context),
             surface: Some(surface),
-            size: (sw as usize, sh as usize),
+            size,
+            physical_size: (pw as usize, ph as usize),
+            scale,
             dark,
             tab: Tab::General,
             hotkey: hk.hotkey,
@@ -707,11 +748,20 @@ impl Settings {
 
             WindowEvent::Resized(size) => {
                 if let Some(surface) = self.surface.as_mut() {
-                    let (sw, sh) = (size.width.max(1), size.height.max(1));
+                    let (pw, ph) = (size.width.max(1), size.height.max(1));
                     let _ =
-                        surface.resize(NonZeroU32::new(sw).unwrap(), NonZeroU32::new(sh).unwrap());
-                    self.size = (sw as usize, sh as usize);
+                        surface.resize(NonZeroU32::new(pw).unwrap(), NonZeroU32::new(ph).unwrap());
+                    self.physical_size = (pw as usize, ph as usize);
+                    self.size = (
+                        ((pw as f64) / self.scale).round().max(1.0) as usize,
+                        ((ph as f64) / self.scale).round().max(1.0) as usize,
+                    );
                 }
+                self.request_redraw();
+            }
+
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                self.scale = scale_factor;
                 self.request_redraw();
             }
 
@@ -730,23 +780,27 @@ impl Settings {
             }
 
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = (position.x, position.y);
+                // `position` is always physical; the rest of this module works in
+                // logical coordinates (see the module doc), so convert once here.
+                let x = position.x / self.scale;
+                let y = position.y / self.scale;
+                self.cursor = (x, y);
                 if self.picker_drag.is_some() {
                     // Follow the color picker drag.
-                    self.apply_click_color_picker(position.x, position.y);
+                    self.apply_click_color_picker(x, y);
                 } else if self.text_drag {
                     // Follow the text field drag-selection.
-                    self.update_text_drag(position.x);
+                    self.update_text_drag(x);
                 } else if let Some(grab_offset) = self.scrollbar_drag {
                     // Follow the scrollbar-thumb drag.
-                    self.update_scrollbar_drag(position.y, grab_offset);
+                    self.update_scrollbar_drag(y, grab_offset);
                 } else {
-                    let h = self.button_at(position.x as usize, position.y as usize);
+                    let h = self.button_at(x as usize, y as usize);
                     if h != self.hover {
                         self.hover = h;
                         self.request_redraw();
                     }
-                    let scrollbar_hover = self.scrollbar_hit(position.x, position.y).is_some();
+                    let scrollbar_hover = self.scrollbar_hit(x, y).is_some();
                     if scrollbar_hover != self.scrollbar_hover {
                         self.scrollbar_hover = scrollbar_hover;
                         self.request_redraw();
@@ -1322,18 +1376,36 @@ impl Settings {
         // The hover-emphasis direction (lighten in dark theme, darken in light).
         let hover_tint = |c: u32| hover_tint_for(c, dark);
 
-        buf.fill(BG);
+        let Some(t) = text else {
+            buf.fill(BG);
+            let _ = buf.present();
+            return;
+        };
+
+        // Every layout constant across this module and the per-tab
+        // submodules is a fixed logical-pixel count, unaffected by DPI —
+        // `Canvas`'s own drawing methods scale each shape's coordinates by
+        // `self.scale` before touching the (physical-sized) surface
+        // buffer, so this call site itself needs no scaling logic at all.
+        // See the module doc for why.
+        let (pw, ph) = self.physical_size;
 
         {
             let mut canvas = Canvas {
                 buf: &mut buf[..],
-                w: sw,
-                h: sh,
+                w: pw,
+                h: ph,
+                scale: self.scale,
             };
-            let Some(t) = text else {
-                let _ = buf.present();
-                return;
-            };
+            canvas.fill(
+                Rect {
+                    x0: 0,
+                    y0: 0,
+                    x1: sw,
+                    y1: sh,
+                },
+                BG,
+            );
 
             t.draw(&mut canvas, 20.0, 30.0, "pashari Settings", 20.0, TEXT);
 
@@ -1673,6 +1745,16 @@ fn stroke_top_bottom_aware(
     draw_bottom: bool,
     color: u32,
 ) {
+    // Bypasses `Canvas::stroke` (to support the draw_top/draw_bottom
+    // split), so it has to scale `r` to physical pixels itself, the same
+    // way `Canvas`'s own shape-drawing methods do.
+    let s = |v: usize| ((v as f64) * canvas.scale).round() as usize;
+    let r = Rect {
+        x0: s(r.x0),
+        y0: s(r.y0),
+        x1: s(r.x1),
+        y1: s(r.y1),
+    };
     if draw_top {
         for x in r.x0..r.x1 {
             canvas.set(x, r.y0, color);

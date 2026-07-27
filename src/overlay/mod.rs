@@ -28,7 +28,7 @@ use std::rc::Rc;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use winit::dpi::{PhysicalPosition, PhysicalSize};
+use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{
     DeviceEvent, DeviceId, ElementState, MouseButton, MouseScrollDelta, WindowEvent,
 };
@@ -193,6 +193,13 @@ struct Frozen {
     /// monitor, so button placement clamps against this instead — the
     /// range actually showing a screen.
     monitors: Vec<Rect>,
+    /// Each monitor's own DPI scale factor, same order/index as
+    /// `monitors`. A multi-monitor setup can mix DPIs, and this window
+    /// spans every monitor at once, so there's no single "the window's
+    /// scale factor" that's correct everywhere — anything sized by DPI
+    /// (currently just the post-selection action menu) has to look up the
+    /// specific monitor a selection is on.
+    monitor_dpis: Vec<f64>,
 }
 
 /// Computes the bounding rect `(min_x, min_y, max_x, max_y)` containing
@@ -212,35 +219,85 @@ fn monitors_bounds(rects: &[(i32, i32, u32, u32)]) -> Option<(i32, i32, i32, i32
         })
 }
 
-/// Returns the monitor rect that actually shows rect `sel` (`monitors` in
-/// src coordinates). If `sel` isn't fully contained by any one monitor
-/// (e.g. a selection spanning multiple monitors), falls back to whichever
-/// monitor overlaps it most. Falls back to the whole composited canvas
-/// (`canvas`) if there are no monitors (an OS-independent pure function).
-fn containing_monitor(monitors: &[Rect], sel: Rect, canvas: Rect) -> Rect {
+/// Index of the monitor that actually shows rect `sel` (`monitors` in src
+/// coordinates). If `sel` isn't fully contained by any one monitor (e.g. a
+/// selection spanning multiple monitors), falls back to whichever monitor
+/// overlaps it most. `None` if there are no monitors (an OS-independent
+/// pure function; shared by `containing_monitor` and the per-monitor DPI
+/// lookup, so both agree on which monitor a selection belongs to).
+fn containing_monitor_index(monitors: &[Rect], sel: Rect) -> Option<usize> {
     monitors
         .iter()
-        .find(|m| m.x0 <= sel.x0 && m.y0 <= sel.y0 && m.x1 >= sel.x1 && m.y1 >= sel.y1)
+        .position(|m| m.x0 <= sel.x0 && m.y0 <= sel.y0 && m.x1 >= sel.x1 && m.y1 >= sel.y1)
         .or_else(|| {
-            monitors.iter().max_by_key(|m| {
-                let iw = m.x1.min(sel.x1).saturating_sub(m.x0.max(sel.x0));
-                let ih = m.y1.min(sel.y1).saturating_sub(m.y0.max(sel.y0));
-                iw * ih
-            })
+            monitors
+                .iter()
+                .enumerate()
+                .max_by_key(|(_, m)| {
+                    let iw = m.x1.min(sel.x1).saturating_sub(m.x0.max(sel.x0));
+                    let ih = m.y1.min(sel.y1).saturating_sub(m.y0.max(sel.y0));
+                    iw * ih
+                })
+                .map(|(i, _)| i)
         })
-        .copied()
+}
+
+/// Returns the monitor rect that actually shows rect `sel` (`monitors` in
+/// src coordinates). Falls back to the whole composited canvas (`canvas`)
+/// if there are no monitors (an OS-independent pure function).
+fn containing_monitor(monitors: &[Rect], sel: Rect, canvas: Rect) -> Rect {
+    containing_monitor_index(monitors, sel)
+        .map(|i| monitors[i])
         .unwrap_or(canvas)
+}
+
+/// One monitor as reported by the windowing system: absolute position and
+/// size (both physical pixels) plus its own DPI scale factor.
+type MonitorInfo = ((i32, i32), (u32, u32), f64);
+
+/// Pairs each monitor rect (src coordinates; `origin` is where `(0,0)`
+/// sits in virtual-desktop coordinates) with a scale factor, by finding
+/// the `handles` entry covering that rect's center. Falls back to 1.0 for
+/// anything unmatched (an OS-independent pure function).
+fn match_monitor_dpis(origin: (i32, i32), monitors: &[Rect], handles: &[MonitorInfo]) -> Vec<f64> {
+    monitors
+        .iter()
+        .map(|m| {
+            let cx = origin.0 + m.x0 as i32 + (m.x1 - m.x0) as i32 / 2;
+            let cy = origin.1 + m.y0 as i32 + (m.y1 - m.y0) as i32 / 2;
+            handles
+                .iter()
+                .find(|&&((hx, hy), (hw, hh), _)| {
+                    cx >= hx && cx < hx + hw as i32 && cy >= hy && cy < hy + hh as i32
+                })
+                .map(|&(.., scale)| scale)
+                .unwrap_or(1.0)
+        })
+        .collect()
 }
 
 impl Frozen {
     /// Captures all monitors and composites them into one virtual-desktop-wide image.
-    fn capture() -> Result<Self, Box<dyn std::error::Error>> {
+    fn capture(event_loop: &ActiveEventLoop) -> Result<Self, Box<dyn std::error::Error>> {
         use xcap::Monitor;
 
         let monitors = Monitor::all()?;
         let rects: Vec<(i32, i32, u32, u32)> = monitors
             .iter()
             .map(|m| (m.x(), m.y(), m.width(), m.height()))
+            .collect();
+        // Scale factors come from winit, not xcap: xcap derives its own
+        // from a device context's logical-vs-physical width ratio, which
+        // is always 1 in a DPI-aware process like this one (nothing is
+        // virtualized for it), whereas winit reports each monitor's real
+        // per-monitor DPI.
+        let handles: Vec<MonitorInfo> = event_loop
+            .available_monitors()
+            .map(|m| {
+                let p = m.position();
+                let s = m.size();
+                ((p.x, p.y), (s.width, s.height), m.scale_factor())
+            })
             .collect();
         let (min_x, min_y, max_x, max_y) =
             monitors_bounds(&rects).ok_or("モニタが見つかりません")?;
@@ -255,6 +312,7 @@ impl Frozen {
                 y1: (((y - min_y) as i64 + h as i64).clamp(0, height as i64)) as usize,
             })
             .collect();
+        let monitor_dpis = match_monitor_dpis((min_x, min_y), &monitor_rects, &handles);
 
         let mut bright = vec![0u32; width * height];
         let mut dim = vec![0u32; width * height];
@@ -299,6 +357,7 @@ impl Frozen {
             dim,
             origin: (min_x, min_y),
             monitors: monitor_rects,
+            monitor_dpis,
         })
     }
 }
@@ -434,7 +493,15 @@ pub struct Overlay {
     control_window: Option<Rc<Window>>,
     control_context: Option<softbuffer::Context<Rc<Window>>>,
     control_surface: Option<softbuffer::Surface<Rc<Window>, Rc<Window>>>,
+    /// The control bar's logical (DPI-independent) size, used for layout
+    /// and hit-testing — see `control_dpi`.
     control_size: (usize, usize),
+    /// The control bar window/surface's actual physical pixel size.
+    control_physical_size: (usize, usize),
+    /// The control bar window's DPI scale factor (`window.scale_factor()`),
+    /// read once at creation (this window is short-lived, so unlike
+    /// Settings/Editor it doesn't react to `ScaleFactorChanged`).
+    control_dpi: f64,
     /// The button the cursor is over on the control bar.
     control_hover: Option<CtrlBtn>,
     /// Output format (toggle, default MP4).
@@ -539,6 +606,8 @@ impl Overlay {
             control_context: None,
             control_surface: None,
             control_size: (0, 0),
+            control_physical_size: (0, 0),
+            control_dpi: 1.0,
             control_hover: None,
             record_format,
             fps: cfg.record_fps.max(1),
@@ -658,7 +727,15 @@ impl Overlay {
         let uploaders_configured = !crate::store::enabled_uploaders().is_empty();
         self.menu = self.selection.map(|sel| {
             let bounds = containing_monitor(&self.frozen.monitors, sel, canvas);
-            menu::Menu::layout(sel, bounds, &self.keys.menu, uploaders_configured)
+            // Looked up per-monitor (not a single window-wide DPI): this
+            // window spans every monitor at once, and a multi-monitor
+            // setup can mix DPIs, so the menu has to scale to whichever
+            // monitor the selection actually landed on.
+            let dpi = containing_monitor_index(&self.frozen.monitors, sel)
+                .and_then(|i| self.frozen.monitor_dpis.get(i))
+                .copied()
+                .unwrap_or(1.0);
+            menu::Menu::layout(sel, bounds, &self.keys.menu, uploaders_configured, dpi)
         });
     }
 
@@ -1112,7 +1189,7 @@ impl Overlay {
             .with_resizable(false)
             .with_window_level(WindowLevel::AlwaysOnTop)
             .with_position(PhysicalPosition::new(x as i32 + ox, y as i32 + oy))
-            .with_inner_size(PhysicalSize::new(CONTROL_W as u32, CONTROL_H as u32))
+            .with_inner_size(LogicalSize::new(CONTROL_W as f64, CONTROL_H as f64))
             // Created hidden so the animation-disable flag can be set before it's shown.
             .with_visible(false)
             .with_skip_taskbar(true);
@@ -1134,7 +1211,12 @@ impl Overlay {
             .resize(NonZeroU32::new(cw).unwrap(), NonZeroU32::new(ch).unwrap())
             .expect("control resize");
 
-        self.control_size = (cw as usize, ch as usize);
+        self.control_dpi = window.scale_factor();
+        self.control_physical_size = (cw as usize, ch as usize);
+        self.control_size = (
+            ((cw as f64) / self.control_dpi).round().max(1.0) as usize,
+            ((ch as f64) / self.control_dpi).round().max(1.0) as usize,
+        );
         window.request_redraw();
         self.control_window = Some(window);
         self.control_context = Some(context);
@@ -1316,10 +1398,12 @@ impl Overlay {
         buf.fill(0x001E_1E1E);
 
         {
+            let (pw, ph) = self.control_physical_size;
             let mut canvas = Canvas {
                 buf: &mut buf[..],
-                w: sw,
-                h: sh,
+                w: pw,
+                h: ph,
+                scale: self.control_dpi,
             };
             for (btn, rect) in &buttons {
                 let (base, label, enabled): (u32, String, bool) = match btn {
@@ -1422,7 +1506,11 @@ impl Overlay {
                     let (cw, ch) = (size.width.max(1), size.height.max(1));
                     let _ =
                         surface.resize(NonZeroU32::new(cw).unwrap(), NonZeroU32::new(ch).unwrap());
-                    self.control_size = (cw as usize, ch as usize);
+                    self.control_physical_size = (cw as usize, ch as usize);
+                    self.control_size = (
+                        ((cw as f64) / self.control_dpi).round().max(1.0) as usize,
+                        ((ch as f64) / self.control_dpi).round().max(1.0) as usize,
+                    );
                 }
                 if let Some(w) = self.control_window.as_ref() {
                     w.request_redraw();
@@ -1504,7 +1592,9 @@ impl Overlay {
             }
 
             WindowEvent::CursorMoved { position, .. } => {
-                let hit = self.control_hit(position.x as usize, position.y as usize);
+                let x = position.x / self.control_dpi;
+                let y = position.y / self.control_dpi;
+                let hit = self.control_hit(x as usize, y as usize);
                 if hit != self.control_hover {
                     self.control_hover = hit;
                     if let Some(w) = self.control_window.as_ref() {
@@ -1682,6 +1772,7 @@ impl Overlay {
                 buf: &mut buf[..],
                 w: sw,
                 h: sh,
+                scale: 1.0,
             };
 
             if let Some(r) = rect_src {
@@ -2114,7 +2205,7 @@ fn next_fps(current: u32, presets: &[u32]) -> u32 {
 impl Overlay {
     /// Captures the freeze image and starts an overlay session (called by App on a hotkey).
     pub(crate) fn start(event_loop: &ActiveEventLoop) -> Result<Self, Box<dyn std::error::Error>> {
-        let frozen = Frozen::capture()?;
+        let frozen = Frozen::capture(event_loop)?;
         // Enumerates top-level windows for auto region snapping before
         // creating the overlay window, so it doesn't include itself as a candidate.
         let snapshot = snap::Snapshot::capture(frozen.origin, (frozen.width, frozen.height));
@@ -2650,6 +2741,49 @@ mod tests {
         assert_eq!(containing_monitor(&[], sel, canvas), canvas);
     }
 
+    #[test]
+    fn match_monitor_dpis_pairs_each_monitor_with_its_own_scale_factor() {
+        // A 100% primary at (-1920,0) and a 150% secondary at (0,0), so
+        // the composited origin is negative (like a left-of-primary layout).
+        let origin = (-1920, 0);
+        let monitors = [
+            Rect {
+                x0: 0,
+                y0: 0,
+                x1: 1920,
+                y1: 1080,
+            },
+            Rect {
+                x0: 1920,
+                y0: 0,
+                x1: 1920 + 2560,
+                y1: 1440,
+            },
+        ];
+        let handles = [
+            ((-1920, 0), (1920u32, 1080u32), 1.0),
+            ((0, 0), (2560u32, 1440u32), 1.5),
+        ];
+        assert_eq!(
+            match_monitor_dpis(origin, &monitors, &handles),
+            vec![1.0, 1.5]
+        );
+    }
+
+    #[test]
+    fn match_monitor_dpis_falls_back_to_1_when_no_handle_covers_the_monitor() {
+        let monitors = [Rect {
+            x0: 0,
+            y0: 0,
+            x1: 1920,
+            y1: 1080,
+        }];
+        // A handle that sits somewhere else entirely.
+        let handles = [((5000, 5000), (800u32, 600u32), 2.0)];
+        assert_eq!(match_monitor_dpis((0, 0), &monitors, &handles), vec![1.0]);
+        assert_eq!(match_monitor_dpis((0, 0), &monitors, &[]), vec![1.0]);
+    }
+
     /// A minimal `Overlay` for tests (no real capture/window). Just one `w x h` monitor.
     fn test_overlay(w: usize, h: usize) -> Overlay {
         let frozen = Frozen {
@@ -2664,6 +2798,7 @@ mod tests {
                 x1: w,
                 y1: h,
             }],
+            monitor_dpis: vec![1.0],
         };
         let mut overlay = Overlay::new(frozen);
         overlay.surface_size = (w, h);
