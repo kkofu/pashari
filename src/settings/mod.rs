@@ -24,6 +24,7 @@
 //! — since it rasterizes an actual vector font, this keeps glyphs crisp at
 //! any DPI rather than nearest-neighbor magnified.
 
+mod about;
 mod capture_tab;
 mod editor_tab;
 mod general;
@@ -79,7 +80,9 @@ const SAVE_BG: u32 = 0x0033_A852;
 const SCROLLBAR_THUMB: u32 = 0x00A8_A8A8;
 const SCROLLBAR_THUMB_HOVER: u32 = 0x0080_8080;
 
-/// A vertical tab.
+/// A vertical tab. `About` is deliberately not in `TABS` — it's pinned to
+/// the bottom of the sidebar instead of stacking with the rest (see
+/// `about_tab_rect`).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Recent,
@@ -89,6 +92,7 @@ enum Tab {
     Editor,
     Upload,
     Hotkeys,
+    About,
 }
 
 const TABS: [(Tab, &str); 7] = [
@@ -100,6 +104,20 @@ const TABS: [(Tab, &str); 7] = [
     (Tab::Upload, "Upload"),
     (Tab::Hotkeys, "Hotkeys"),
 ];
+
+const ABOUT_LABEL: &str = "About";
+
+/// The About tab's button rect, pinned to the bottom of the sidebar
+/// regardless of window height (unlike the rest, which stack from the top
+/// via `tab_buttons`).
+fn about_tab_rect(sh: usize) -> Rect {
+    field(
+        12,
+        sh.saturating_sub(TAB_BTN_H + 12),
+        SIDEBAR_W - 24,
+        TAB_BTN_H,
+    )
+}
 
 /// Distinguishes save locations by output kind.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -730,6 +748,7 @@ impl Settings {
             .collect();
 
         let (sw, sh) = self.size;
+        v.push((Btn::Tab(Tab::About), about_tab_rect(sh)));
         match self.tab {
             Tab::Recent => v.extend(self.buttons_recent(sw, sh)),
             Tab::General => v.extend(self.buttons_general(sw)),
@@ -738,6 +757,7 @@ impl Settings {
             Tab::Editor => v.extend(self.buttons_editor()),
             Tab::Upload => v.extend(self.buttons_upload(sw)),
             Tab::Hotkeys => v.extend(self.buttons_hotkeys(sw, sh)),
+            Tab::About => {}
         }
 
         v.push((
@@ -1456,6 +1476,25 @@ impl Settings {
                 t.draw(&mut canvas, lx, baseline, label, 15.0, tcolor);
             }
 
+            // The About tab: same look as the rest, but pinned to the
+            // sidebar's bottom instead of stacking with them (see `about_tab_rect`).
+            {
+                let r = about_tab_rect(sh);
+                let active = tab == Tab::About;
+                let base = if active { ACCENT } else { SIDEBAR_BG };
+                let color = if !active && hover == Some(Btn::Tab(Tab::About)) {
+                    hover_tint(base)
+                } else {
+                    base
+                };
+                canvas.fill(r, color);
+                let tcolor = if active { 0x00FF_FFFF } else { TEXT };
+                let tw = t.text_width(ABOUT_LABEL, 15.0);
+                let lx = r.x0 as f32 + ((r.x1 - r.x0) as f32 - tw) / 2.0;
+                let baseline = t.baseline_for_center((r.y0 + r.y1) as f32 / 2.0, 15.0);
+                t.draw(&mut canvas, lx, baseline, ABOUT_LABEL, 15.0, tcolor);
+            }
+
             // Per-tab content.
             match tab {
                 Tab::Recent => recent::draw_recent(
@@ -1563,6 +1602,7 @@ impl Settings {
                     capturing,
                     scrollbar_active,
                 ),
+                Tab::About => about::draw_about(&mut canvas, t, dark, sw),
             }
 
             // Buttons (tabs, checkboxes, token fields, and Hotkeys rows are
