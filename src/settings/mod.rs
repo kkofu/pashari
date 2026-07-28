@@ -467,6 +467,10 @@ pub struct Settings {
     /// Hotkeys tab scroll position in px, changed by the mouse wheel.
     hotkey_scroll: i32,
 
+    // --- About tab ---
+    /// About tab scroll position in px, changed by the mouse wheel.
+    about_scroll: i32,
+
     // --- Recent tab (editor session history) ---
     /// Scanned once when opened (newest first); unchanged until Save/Cancel.
     sessions: Vec<crate::session::SessionSummary>,
@@ -657,6 +661,7 @@ impl Settings {
             hotkey_editor_tool_number_marker: hk.hotkey_editor_tool_number_marker,
             hotkey_error: None,
             hotkey_scroll: 0,
+            about_scroll: 0,
             sessions: crate::session::list(),
             recent_scroll: 0,
             session_history_limit: cfg.session_history_limit,
@@ -877,6 +882,13 @@ impl Settings {
                     self.uploader_scroll =
                         (self.uploader_scroll - dy as i32).clamp(0, max_scroll as i32);
                     self.request_redraw();
+                } else if self.tab == Tab::About {
+                    let viewport = about::about_viewport(sw, sh);
+                    let max_scroll = (about::about_content_height(about::USED_CRATES.len())
+                        - (viewport.y1 - viewport.y0) as i64)
+                        .max(0);
+                    self.about_scroll = (self.about_scroll - dy as i32).clamp(0, max_scroll as i32);
+                    self.request_redraw();
                 }
             }
 
@@ -1039,6 +1051,11 @@ impl Settings {
                 let content_h = upload_tab::uploader_content_height(self.uploaders.len());
                 Some((viewport, content_h, self.uploader_scroll))
             }
+            Tab::About => {
+                let viewport = about::about_viewport(sw, sh);
+                let content_h = about::about_content_height(about::USED_CRATES.len());
+                Some((viewport, content_h, self.about_scroll))
+            }
             _ => None,
         }
     }
@@ -1073,6 +1090,7 @@ impl Settings {
             Tab::Hotkeys => self.hotkey_scroll = new_scroll,
             Tab::Recent => self.recent_scroll = new_scroll,
             Tab::Upload => self.uploader_scroll = new_scroll,
+            Tab::About => self.about_scroll = new_scroll,
             _ => {}
         }
         self.request_redraw();
@@ -1353,6 +1371,7 @@ impl Settings {
         let hotkey_error = self.hotkey_error.clone();
         let hotkey_scroll = self.hotkey_scroll;
         let recent_scroll = self.recent_scroll;
+        let about_scroll = self.about_scroll;
         // Brighten the scrollbar thumb while hovered or actively dragged.
         let scrollbar_active = self.scrollbar_hover || self.scrollbar_drag.is_some();
         let session_history_limit = self.session_history_limit;
@@ -1602,7 +1621,9 @@ impl Settings {
                     capturing,
                     scrollbar_active,
                 ),
-                Tab::About => about::draw_about(&mut canvas, t, dark, sw),
+                Tab::About => {
+                    about::draw_about(&mut canvas, t, dark, sw, sh, about_scroll, scrollbar_active)
+                }
             }
 
             // Buttons (tabs, checkboxes, token fields, and Hotkeys rows are
