@@ -38,6 +38,7 @@ use winit::platform::windows::WindowAttributesExtWindows;
 use winit::window::{CursorIcon, Window, WindowId, WindowLevel};
 
 use raw_window_handle::HasWindowHandle;
+use rayon::prelude::*;
 
 use crate::app::UserEvent;
 use crate::capture;
@@ -1750,29 +1751,43 @@ impl Overlay {
             // selected rows is overwritten at full brightness.
             let col_src = axis_map(&view, Axis::X, sw, fw);
             let row_src = axis_map(&view, Axis::Y, sh, fh);
-            for (sy, &srcy) in row_src.iter().enumerate() {
-                let row = sy * sw;
-                if srcy == usize::MAX {
-                    buf[row..row + sw].fill(0);
-                    continue;
-                }
-                let base = srcy * fw;
-                for (sx, &srcx) in col_src.iter().enumerate() {
-                    buf[row + sx] = if srcx == usize::MAX {
-                        0
-                    } else {
-                        self.frozen.dim[base + srcx]
-                    };
-                }
-                if let Some(r) = rect_src
-                    && srcy >= r.y0
-                    && srcy < r.y1
-                {
-                    for (sx, &srcx) in col_src.iter().enumerate() {
-                        if srcx != usize::MAX && srcx >= r.x0 && srcx < r.x1 {
-                            buf[row + sx] = self.frozen.bright[base + srcx];
+
+            // This composites every screen pixel (not just the magnified
+            // viewport), and the canvas spans the whole virtual desktop —
+            // easily several million pixels on a multi-monitor/4K setup,
+            // redone on every redraw while dragging or zooming. Scanlines
+            // are independent (each only touches its own row_src entry
+            // plus the shared, read-only dim/bright buffers), so split
+            // them across CPU cores the same way editor::annotation's
+            // paint_image does with rayon's persistent worker pool
+            // (spawning fresh OS threads every frame would erase the gains).
+            const PAR_PIXEL_THRESHOLD: usize = 200_000;
+            let n_threads = rayon::current_num_threads().min(8);
+            let parallel = n_threads > 1 && sw * sh >= PAR_PIXEL_THRESHOLD;
+            let rows_per_chunk = sh.div_ceil(n_threads.max(1));
+            let dim = &self.frozen.dim[..];
+            let bright = &self.frozen.bright[..];
+
+            if parallel {
+                buf.par_chunks_mut(rows_per_chunk * sw)
+                    .enumerate()
+                    .for_each(|(chunk_idx, chunk)| {
+                        let y0 = chunk_idx * rows_per_chunk;
+                        for (i, row) in chunk.chunks_mut(sw).enumerate() {
+                            compose_zoomed_row(
+                                row,
+                                row_src[y0 + i],
+                                &col_src,
+                                dim,
+                                bright,
+                                fw,
+                                rect_src,
+                            );
                         }
-                    }
+                    });
+            } else {
+                for (sy, row) in buf.chunks_mut(sw).enumerate() {
+                    compose_zoomed_row(row, row_src[sy], &col_src, dim, bright, fw, rect_src);
                 }
             }
         }
@@ -1824,6 +1839,42 @@ impl Overlay {
 enum Axis {
     X,
     Y,
+}
+
+/// Composes one screen row of the zoomed view: dim-fill, then overwrite the
+/// part inside `rect_src` (if any) at full brightness. Shared by the serial
+/// and rayon-parallel branches in [`Overlay::draw`].
+fn compose_zoomed_row(
+    row: &mut [u32],
+    row_srcy: usize,
+    col_src: &[usize],
+    dim: &[u32],
+    bright: &[u32],
+    fw: usize,
+    rect_src: Option<Rect>,
+) {
+    if row_srcy == usize::MAX {
+        row.fill(0);
+        return;
+    }
+    let base = row_srcy * fw;
+    for (sx, &srcx) in col_src.iter().enumerate() {
+        row[sx] = if srcx == usize::MAX {
+            0
+        } else {
+            dim[base + srcx]
+        };
+    }
+    if let Some(r) = rect_src
+        && row_srcy >= r.y0
+        && row_srcy < r.y1
+    {
+        for (sx, &srcx) in col_src.iter().enumerate() {
+            if srcx != usize::MAX && srcx >= r.x0 && srcx < r.x1 {
+                row[sx] = bright[base + srcx];
+            }
+        }
+    }
 }
 
 /// Computes the src index for each screen-axis pixel (`usize::MAX` if out
