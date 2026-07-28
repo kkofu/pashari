@@ -1751,6 +1751,7 @@ impl Overlay {
             // selected rows is overwritten at full brightness.
             let col_src = axis_map(&view, Axis::X, sw, fw);
             let row_src = axis_map(&view, Axis::Y, sh, fh);
+            let bright_cols = rect_src.map(|r| bright_col_range(&view, r, sw));
 
             // This composites every screen pixel (not just the magnified
             // viewport), and the canvas spans the whole virtual desktop —
@@ -1765,8 +1766,14 @@ impl Overlay {
             let n_threads = rayon::current_num_threads().min(8);
             let parallel = n_threads > 1 && sw * sh >= PAR_PIXEL_THRESHOLD;
             let rows_per_chunk = sh.div_ceil(n_threads.max(1));
-            let dim = &self.frozen.dim[..];
-            let bright = &self.frozen.bright[..];
+            let ctx = ZoomRowCtx {
+                col_src: &col_src,
+                dim: &self.frozen.dim,
+                bright: &self.frozen.bright,
+                fw,
+                rect_src,
+                bright_cols,
+            };
 
             if parallel {
                 buf.par_chunks_mut(rows_per_chunk * sw)
@@ -1774,20 +1781,12 @@ impl Overlay {
                     .for_each(|(chunk_idx, chunk)| {
                         let y0 = chunk_idx * rows_per_chunk;
                         for (i, row) in chunk.chunks_mut(sw).enumerate() {
-                            compose_zoomed_row(
-                                row,
-                                row_src[y0 + i],
-                                &col_src,
-                                dim,
-                                bright,
-                                fw,
-                                rect_src,
-                            );
+                            compose_zoomed_row(row, row_src[y0 + i], &ctx);
                         }
                     });
             } else {
                 for (sy, row) in buf.chunks_mut(sw).enumerate() {
-                    compose_zoomed_row(row, row_src[sy], &col_src, dim, bright, fw, rect_src);
+                    compose_zoomed_row(row, row_src[sy], &ctx);
                 }
             }
         }
@@ -1841,40 +1840,58 @@ enum Axis {
     Y,
 }
 
-/// Composes one screen row of the zoomed view: dim-fill, then overwrite the
-/// part inside `rect_src` (if any) at full brightness. Shared by the serial
-/// and rayon-parallel branches in [`Overlay::draw`].
-fn compose_zoomed_row(
-    row: &mut [u32],
-    row_srcy: usize,
-    col_src: &[usize],
-    dim: &[u32],
-    bright: &[u32],
+/// Per-frame inputs to [`compose_zoomed_row`] that stay the same for every
+/// row (bundled to keep the function's argument count down).
+struct ZoomRowCtx<'a> {
+    col_src: &'a [usize],
+    dim: &'a [u32],
+    bright: &'a [u32],
     fw: usize,
     rect_src: Option<Rect>,
-) {
+    /// Screen-column range covering `rect_src`'s X extent, see [`bright_col_range`].
+    bright_cols: Option<(usize, usize)>,
+}
+
+/// Composes one screen row of the zoomed view: dim-fill, then overwrite the
+/// part inside `ctx.rect_src` (if any) at full brightness. `ctx.bright_cols`
+/// lets this only touch the pixels that actually change instead of
+/// rescanning the whole row for them. Shared by the serial and
+/// rayon-parallel branches in [`Overlay::draw`].
+fn compose_zoomed_row(row: &mut [u32], row_srcy: usize, ctx: &ZoomRowCtx) {
     if row_srcy == usize::MAX {
         row.fill(0);
         return;
     }
-    let base = row_srcy * fw;
-    for (sx, &srcx) in col_src.iter().enumerate() {
+    let base = row_srcy * ctx.fw;
+    for (sx, &srcx) in ctx.col_src.iter().enumerate() {
         row[sx] = if srcx == usize::MAX {
             0
         } else {
-            dim[base + srcx]
+            ctx.dim[base + srcx]
         };
     }
-    if let Some(r) = rect_src
+    if let Some(r) = ctx.rect_src
         && row_srcy >= r.y0
         && row_srcy < r.y1
+        && let Some((bx0, bx1)) = ctx.bright_cols
     {
-        for (sx, &srcx) in col_src.iter().enumerate() {
-            if srcx != usize::MAX && srcx >= r.x0 && srcx < r.x1 {
-                row[sx] = bright[base + srcx];
-            }
+        for (sx, &srcx) in ctx.col_src[bx0..bx1].iter().enumerate() {
+            row[bx0 + sx] = ctx.bright[base + srcx];
         }
     }
+}
+
+/// Computes the screen-column range covering src rect `r`'s `x0..x1` extent
+/// under `view`. `View::screen_to_src` is monotonic in the screen
+/// coordinate (zoom is always > 0), so the columns whose source falls
+/// inside `r` form one contiguous range; this inverts the mapping directly
+/// via `src_to_screen` instead of rescanning `col_src` to find it.
+fn bright_col_range(view: &View, r: Rect, sw: usize) -> (usize, usize) {
+    let x0 = view.src_to_screen(r.x0 as f64, view.center.1).0;
+    let x1 = view.src_to_screen(r.x1 as f64, view.center.1).0;
+    let lo = x0.ceil().clamp(0.0, sw as f64) as usize;
+    let hi = x1.ceil().clamp(0.0, sw as f64) as usize;
+    (lo, hi.max(lo))
 }
 
 /// Computes the src index for each screen-axis pixel (`usize::MAX` if out
@@ -2746,6 +2763,42 @@ impl Overlay {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bright_col_range_matches_a_brute_force_scan_of_axis_map() {
+        // Cross-checks the closed-form range against the same
+        // per-pixel column check axis_map itself does, across zoom
+        // levels/centers/rects that don't line up on integer boundaries.
+        let cases = [
+            (4.0, (100.0, 50.0), (90, 110)),
+            (3.0, (0.0, 0.0), (1, 4)),
+            (2.5, (37.0, 10.0), (5, 200)),
+            (1.5, (0.5, 0.5), (0, 3)),
+        ];
+        let sw = 400;
+        for (zoom, center, (x0, x1)) in cases {
+            let view = View { zoom, center };
+            let col_src = axis_map(&view, Axis::X, sw, 400);
+            let r = Rect {
+                x0,
+                y0: 0,
+                x1,
+                y1: 1,
+            };
+
+            let mut expected_lo = None;
+            let mut expected_hi = 0;
+            for (sx, &srcx) in col_src.iter().enumerate() {
+                if srcx != usize::MAX && srcx >= r.x0 && srcx < r.x1 {
+                    expected_lo.get_or_insert(sx);
+                    expected_hi = sx + 1;
+                }
+            }
+            let expected = (expected_lo.unwrap_or(0), expected_hi);
+
+            assert_eq!(bright_col_range(&view, r, sw), expected, "zoom={zoom}");
+        }
+    }
 
     #[test]
     fn monitors_bounds_covers_all_monitors() {
