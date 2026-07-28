@@ -186,6 +186,9 @@ enum Btn {
     BrowseEditor,
     /// "Launch at Windows startup" checkbox (General tab).
     LaunchAtStartup,
+    /// The About tab's bug-report button; opens the GitHub issue template
+    /// with the app version pre-filled.
+    ReportBug,
     /// "Show mouse cursor in recordings" checkbox (Video tab).
     ShowCursorInRecording,
     /// "Show click ripples" checkbox (Video tab).
@@ -762,7 +765,7 @@ impl Settings {
             Tab::Editor => v.extend(self.buttons_editor()),
             Tab::Upload => v.extend(self.buttons_upload(sw)),
             Tab::Hotkeys => v.extend(self.buttons_hotkeys(sw, sh)),
-            Tab::About => {}
+            Tab::About => v.extend(about::buttons_about(self.text.as_ref())),
         }
 
         v.push((
@@ -1279,6 +1282,10 @@ impl Settings {
                 self.request_redraw();
                 None
             }
+            Btn::ReportBug => {
+                crate::shell::open_url(&about::bug_report_url());
+                None
+            }
             Btn::SelectUploader(_)
             | Btn::DeleteUploader(_)
             | Btn::ToggleUploaderEnabled(_)
@@ -1621,9 +1628,16 @@ impl Settings {
                     capturing,
                     scrollbar_active,
                 ),
-                Tab::About => {
-                    about::draw_about(&mut canvas, t, dark, sw, sh, about_scroll, scrollbar_active)
-                }
+                Tab::About => about::draw_about(
+                    &mut canvas,
+                    t,
+                    dark,
+                    hover,
+                    sw,
+                    sh,
+                    about_scroll,
+                    scrollbar_active,
+                ),
             }
 
             // Buttons (tabs, checkboxes, token fields, and Hotkeys rows are
@@ -1648,6 +1662,7 @@ impl Settings {
                         | Btn::StripSilentAudio
                         | Btn::CheckForUpdates
                         | Btn::DownloadUpdate
+                        | Btn::ReportBug
                         | Btn::CaptureLocal(_)
                         | Btn::Capture
                         | Btn::ResetLocal(_)
@@ -1698,6 +1713,7 @@ impl Settings {
                     | Btn::StripSilentAudio
                     | Btn::CheckForUpdates
                     | Btn::DownloadUpdate
+                    | Btn::ReportBug
                     | Btn::CaptureLocal(_)
                     | Btn::Capture
                     | Btn::ResetLocal(_)
