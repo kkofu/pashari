@@ -37,6 +37,14 @@ windows = { version = "0.58", features = [
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
+    # 領域選択オーバーレイの present を GDI BitBlt から DXGI flip model へ
+    # 移す（src/overlay/present.rs）。GDI は DWM の合成と同期できずティア
+    # リングを原理的に排除できないため。新規クレートではなく既存 windows
+    # クレートの feature 追加のみ。
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
     "Win32_System_Threading",
     "Win32_Security",
     "Win32_UI_Shell_Common",

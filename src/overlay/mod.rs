@@ -19,6 +19,7 @@
 //! moved to pick any pixel precisely even while zoomed in.
 
 mod menu;
+mod present;
 pub(crate) mod snap;
 mod view;
 
@@ -441,6 +442,14 @@ pub struct Overlay {
     window: Option<Rc<Window>>,
     context: Option<softbuffer::Context<Rc<Window>>>,
     surface: Option<softbuffer::Surface<Rc<Window>, Rc<Window>>>,
+    /// Presents through a DXGI flip swapchain, which unlike softbuffer's
+    /// GDI blit can't be composited half-finished (see `present`). `None`
+    /// only if D3D11 was unavailable, in which case `surface` is used instead.
+    presenter: Option<present::FlipPresenter>,
+    /// The frame composited into each redraw, presented as one whole
+    /// buffer. Owned here rather than borrowed from softbuffer so the same
+    /// compositing code feeds either present path.
+    frame: Vec<u32>,
     /// The surface's (window's) current size.
     surface_size: (usize, usize),
     /// The real cursor's current position (screen coordinates).
@@ -548,13 +557,11 @@ impl SolidWindow {
     fn redraw(&mut self) {
         if let Ok(mut buf) = self.surface.buffer_mut() {
             buf.fill(self.color);
-            // Waits for the vblank before blitting, same ordering and
-            // reasoning as `Overlay::draw()`'s own `DwmFlush` call — this
-            // window's position/size changes on every cursor move while
-            // adjusting the region, so the strip tears without it.
-            // SAFETY: a DWM global function call taking no arguments that
-            // changes no other state.
-            let _ = unsafe { windows::Win32::Graphics::Dwm::DwmFlush() };
+            // No vblank wait here, unlike the main overlay: every pixel of
+            // this strip is the same color, so a partially-composited blit
+            // is indistinguishable from a finished one. Waiting would only
+            // serialize the four edges onto four separate frames, making
+            // the border visibly come apart while the region is adjusted.
             let _ = buf.present();
         }
     }
@@ -588,6 +595,8 @@ impl Overlay {
             window: None,
             context: None,
             surface: None,
+            presenter: None,
+            frame: Vec::new(),
             surface_size: (0, 0),
             cursor: PhysicalPosition::new(0.0, 0.0),
             cursor_src: (0.0, 0.0),
@@ -1721,13 +1730,10 @@ impl Overlay {
         let selecting = matches!(self.mode, Mode::Selecting);
 
         let text = self.text.as_ref();
-        let Some(surface) = self.surface.as_mut() else {
+        if self.frame.len() < sw * sh {
             return;
-        };
-        let mut buf = match surface.buffer_mut() {
-            Ok(b) => b,
-            Err(_) => return,
-        };
+        }
+        let buf = &mut self.frame[..sw * sh];
 
         // --- Background (dimmed freeze image + cutout inside the selection) ---
         if view.zoom == 1.0 {
@@ -1821,18 +1827,31 @@ impl Overlay {
             }
         }
 
-        // softbuffer's Windows backend blits with GDI's BitBlt, which has
-        // no vsync control at all — it copies wherever the scanout
-        // happens to be. Waiting here, *before* the blit, starts it right
-        // after a vblank so it finishes ahead of the beam. Flushing after
-        // presenting instead would only pace the loop: the blit would
-        // still land however long the repaint took past the vblank, which
-        // is exactly where the tear line shows up.
+        // Hands the finished frame to the flip swapchain, which blocks
+        // until the next vblank and gives DWM a whole buffer — a
+        // half-drawn frame can't reach the screen.
+        if let Some(p) = self.presenter.as_mut() {
+            if let Err(e) = p.present(&self.frame) {
+                eprintln!("present failed: {e}");
+            }
+            return;
+        }
+
+        // GDI fallback. Unlike the swapchain, `BitBlt` copies wherever the
+        // scanout happens to be, so waiting for the vblank *before* it at
+        // least starts the copy right after one rather than mid-frame.
         // DWM is always on from Windows 8 onward, so this can't fail.
+        let Some(surface) = self.surface.as_mut() else {
+            return;
+        };
+        let Ok(mut out) = surface.buffer_mut() else {
+            return;
+        };
+        out.copy_from_slice(&self.frame[..sw * sh]);
         // SAFETY: a DWM global function call taking no arguments that
         // changes no other state.
         let _ = unsafe { windows::Win32::Graphics::Dwm::DwmFlush() };
-        let _ = buf.present();
+        let _ = out.present();
     }
 }
 
@@ -2085,6 +2104,18 @@ fn draw_selection_crosshair(canvas: &mut Canvas, x: f64, y: f64) {
             canvas.set_i(cx + t, cy + d, color);
         }
     }
+}
+
+/// The raw `HWND` behind a winit window.
+fn window_hwnd(window: &Window) -> Option<windows::Win32::Foundation::HWND> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let RawWindowHandle::Win32(h) = window.window_handle().ok()?.as_raw() else {
+        return None;
+    };
+    Some(windows::Win32::Foundation::HWND(
+        h.hwnd.get() as *mut core::ffi::c_void
+    ))
 }
 
 /// Excludes a window from screen capture (Graphics Capture) by setting
@@ -2422,20 +2453,34 @@ impl Overlay {
         // reliable method as a follow-up.
         force_foreground(&window);
 
-        let context = softbuffer::Context::new(window.clone()).expect("softbuffer context");
-        let mut surface =
-            softbuffer::Surface::new(&context, window.clone()).expect("softbuffer surface");
-
         let size = window.inner_size();
         let (sw, sh) = (size.width.max(1), size.height.max(1));
-        surface
-            .resize(NonZeroU32::new(sw).unwrap(), NonZeroU32::new(sh).unwrap())
-            .expect("surface resize");
 
+        // Preferred path: a flip swapchain, so DWM only ever composites
+        // whole frames. Falls back to softbuffer's GDI blit (which can
+        // tear) if D3D11 isn't available at all.
+        self.presenter =
+            window_hwnd(&window).and_then(|hwnd| match present::FlipPresenter::new(hwnd, sw, sh) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    eprintln!("falling back to GDI presentation (may tear): {e}");
+                    None
+                }
+            });
+        if self.presenter.is_none() {
+            let context = softbuffer::Context::new(window.clone()).expect("softbuffer context");
+            let mut surface =
+                softbuffer::Surface::new(&context, window.clone()).expect("softbuffer surface");
+            surface
+                .resize(NonZeroU32::new(sw).unwrap(), NonZeroU32::new(sh).unwrap())
+                .expect("surface resize");
+            self.context = Some(context);
+            self.surface = Some(surface);
+        }
+
+        self.frame = vec![0; sw as usize * sh as usize];
         self.surface_size = (sw as usize, sh as usize);
         self.window = Some(window);
-        self.context = Some(context);
-        self.surface = Some(surface);
     }
 
     pub(crate) fn device_event(
@@ -2518,12 +2563,18 @@ impl Overlay {
             }
 
             WindowEvent::Resized(size) => {
+                let (sw, sh) = (size.width.max(1), size.height.max(1));
+                if let Some(p) = self.presenter.as_mut()
+                    && let Err(e) = p.resize(sw, sh)
+                {
+                    eprintln!("presenter resize failed: {e}");
+                }
                 if let Some(surface) = self.surface.as_mut() {
-                    let (sw, sh) = (size.width.max(1), size.height.max(1));
                     let _ =
                         surface.resize(NonZeroU32::new(sw).unwrap(), NonZeroU32::new(sh).unwrap());
-                    self.surface_size = (sw as usize, sh as usize);
                 }
+                self.frame.resize(sw as usize * sh as usize, 0);
+                self.surface_size = (sw as usize, sh as usize);
                 self.build_menu();
                 self.request_redraw();
             }
