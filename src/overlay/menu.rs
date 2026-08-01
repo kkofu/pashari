@@ -155,9 +155,10 @@ impl Menu {
         let panel_w = action_btn * N + aspect_btn_w + total_gap;
         let panel_h = action_btn;
 
-        // Horizontal position: aligned to the selection's left edge, clamped within bounds.
-        let px = sel
-            .x0
+        // Horizontal position: centered on the selection, clamped within bounds.
+        let sel_center_x = (sel.x0 + sel.x1) / 2;
+        let px = sel_center_x
+            .saturating_sub(panel_w / 2)
             .max(bounds.x0)
             .min(bounds.x1.saturating_sub(panel_w).max(bounds.x0));
         // Vertical position: below the selection first, else above, else clamped to bounds' bottom edge.
@@ -360,6 +361,22 @@ mod tests {
         assert_eq!(m.aspect_rect.height(), m.buttons[0].rect.height());
         assert_eq!(m.aspect_rect.x1, m.buttons[0].rect.x0);
         assert_eq!(m.aspect_rect.y0, m.buttons[0].rect.y0);
+    }
+
+    #[test]
+    fn menu_is_horizontally_centered_on_the_selection() {
+        let m = Menu::layout(
+            sel(1000, 100, 1200, 200), // 200px wide, centered at x=1100.
+            full_hd(),
+            &test_keys(),
+            true,
+            None,
+            1.0,
+        );
+        let panel_x0 = m.aspect_rect.x0;
+        let panel_x1 = m.buttons[m.buttons.len() - 1].rect.x1;
+        let panel_center = (panel_x0 + panel_x1) / 2;
+        assert_eq!(panel_center, 1100);
     }
 
     #[test]
