@@ -182,7 +182,9 @@ enum Btn {
     /// Shown next to the status text once a newer version is known; opens its release page.
     DownloadUpdate,
     Browse(SaveKind),
-    DefaultDir(SaveKind),
+    /// A save-dir path field (click to focus and type a path directly;
+    /// clearing it back to empty reverts to the built-in default location).
+    SaveDirField(SaveKind),
     BrowseEditor,
     /// "Launch at Windows startup" checkbox (General tab).
     LaunchAtStartup,
@@ -345,6 +347,12 @@ pub struct Settings {
     save_dir_png: String,
     save_dir_mp4: String,
     save_dir_gif: String,
+    /// Which save-dir path field is focused — shared between Capture's PNG
+    /// field and Video's MP4/GIF fields (same idea as `max_resolution_focus`).
+    save_dir_focus: Option<SaveKind>,
+    /// Edit buffer for the focused save-dir field.
+    save_dir_buf: String,
+    save_dir_cursor: TextCursor,
     /// "Launch at Windows startup" checkbox (General tab).
     launch_at_startup: bool,
     /// Path to the external editor executable; used for Shift+E if set.
@@ -604,6 +612,9 @@ impl Settings {
             save_dir_png: cfg.save_dir_png,
             save_dir_mp4: cfg.save_dir_mp4,
             save_dir_gif: cfg.save_dir_gif,
+            save_dir_focus: None,
+            save_dir_buf: String::new(),
+            save_dir_cursor: TextCursor::default(),
             launch_at_startup: cfg.launch_at_startup,
             external_editor: cfg.external_editor,
             record_show_cursor: cfg.record_show_cursor,
@@ -704,6 +715,112 @@ impl Settings {
             SaveKind::Png => &mut self.save_dir_png,
             SaveKind::Mp4 => &mut self.save_dir_mp4,
             SaveKind::Gif => &mut self.save_dir_gif,
+        }
+    }
+
+    /// Focus the save-dir field for `k` and load its current value into the buffer.
+    fn focus_save_dir(&mut self, k: SaveKind) {
+        self.save_dir_buf = self.save_dir_mut(k).clone();
+        self.save_dir_cursor = TextCursor::at_end(&self.save_dir_buf);
+        self.save_dir_focus = Some(k);
+        self.request_redraw();
+    }
+
+    /// Left-aligned text draw-start x — the same for every save-dir field
+    /// regardless of `k` or row Y (only `sw` affects it), matching the
+    /// layout math in `capture_tab`/`video`'s draw functions.
+    fn save_dir_text_x0(&self) -> f32 {
+        save_row_layout(self.size.0, 0).0.x0 as f32 + 8.0
+    }
+
+    /// Mouse press: focus this field if needed, place caret at click, start
+    /// drag-select.
+    fn begin_save_dir_press(&mut self, k: SaveKind, click_x: f64) {
+        if self.save_dir_focus != Some(k) {
+            self.focus_save_dir(k);
+        }
+        let rel_x = click_x as f32 - self.save_dir_text_x0();
+        let idx = char_index_for_x(self.text.as_ref(), &self.save_dir_buf, 15.0, rel_x);
+        self.save_dir_cursor.set_from_click(idx, false);
+        self.text_drag = true;
+        self.request_redraw();
+    }
+
+    /// Commit the focused field. Trimmed and applied as-is — unlike
+    /// `filename_format`, an empty result isn't rejected in favor of the old
+    /// value: it's kept empty, which `save_dir_for` already treats as "use
+    /// the default location", so clearing the field is how you reset it.
+    /// No-op if unfocused, so it's safe to call unconditionally.
+    fn commit_save_dir(&mut self) {
+        let Some(k) = self.save_dir_focus.take() else {
+            return;
+        };
+        *self.save_dir_mut(k) = self.save_dir_buf.trim().to_string();
+        self.save_dir_buf.clear();
+        self.save_dir_cursor = TextCursor::default();
+        self.request_redraw();
+    }
+
+    /// Copy the current selection to the clipboard, if any.
+    fn copy_save_dir_selection(&self) {
+        if let Some((lo, hi)) = self.save_dir_cursor.selection()
+            && let Ok(mut clip) = arboard::Clipboard::new()
+        {
+            let _ = clip.set_text(self.save_dir_buf[lo..hi].to_string());
+        }
+    }
+
+    fn on_save_dir_key(&mut self, event: &winit::event::KeyEvent) {
+        if apply_common_edit_key(
+            &mut self.save_dir_cursor,
+            &mut self.save_dir_buf,
+            event,
+            self.mods,
+        ) {
+            self.request_redraw();
+            return;
+        }
+        match &event.logical_key {
+            winit::keyboard::Key::Named(NamedKey::Enter) => self.commit_save_dir(),
+            winit::keyboard::Key::Named(NamedKey::Escape) => {
+                self.save_dir_focus = None;
+                self.save_dir_buf.clear();
+                self.save_dir_cursor = TextCursor::default();
+                self.request_redraw();
+            }
+            winit::keyboard::Key::Character(s)
+                if self.mods.control_key() && s.eq_ignore_ascii_case("c") =>
+            {
+                self.copy_save_dir_selection();
+            }
+            winit::keyboard::Key::Character(s)
+                if self.mods.control_key() && s.eq_ignore_ascii_case("x") =>
+            {
+                self.copy_save_dir_selection();
+                self.save_dir_cursor
+                    .delete_selection(&mut self.save_dir_buf);
+                self.request_redraw();
+            }
+            winit::keyboard::Key::Character(s)
+                if self.mods.control_key() && s.eq_ignore_ascii_case("v") =>
+            {
+                if let Ok(text) = arboard::Clipboard::new().and_then(|mut c| c.get_text()) {
+                    self.save_dir_cursor
+                        .insert(&mut self.save_dir_buf, text.trim());
+                    self.request_redraw();
+                }
+            }
+            // Other Ctrl shortcuts aren't typed as text.
+            winit::keyboard::Key::Character(_) if self.mods.control_key() => {}
+            winit::keyboard::Key::Character(s) => {
+                self.save_dir_cursor.insert(&mut self.save_dir_buf, s);
+                self.request_redraw();
+            }
+            winit::keyboard::Key::Named(NamedKey::Space) => {
+                self.save_dir_cursor.insert(&mut self.save_dir_buf, " ");
+                self.request_redraw();
+            }
+            _ => {}
         }
     }
 
@@ -978,6 +1095,10 @@ impl Settings {
             self.on_max_resolution_key(event);
             return None;
         }
+        if self.save_dir_focus.is_some() {
+            self.on_save_dir_key(event);
+            return None;
+        }
         if self.bitrate_dropdown_open
             && event.logical_key == winit::keyboard::Key::Named(NamedKey::Escape)
         {
@@ -1027,6 +1148,11 @@ impl Settings {
             let rel_x = x as f32 - self.max_resolution_text_x0();
             let idx = char_index_for_x(self.text.as_ref(), &self.max_resolution_buf, 15.0, rel_x);
             self.max_resolution_cursor.set_from_click(idx, true);
+            self.request_redraw();
+        } else if self.save_dir_focus.is_some() {
+            let rel_x = x as f32 - self.save_dir_text_x0();
+            let idx = char_index_for_x(self.text.as_ref(), &self.save_dir_buf, 15.0, rel_x);
+            self.save_dir_cursor.set_from_click(idx, true);
             self.request_redraw();
         }
     }
@@ -1154,6 +1280,10 @@ impl Settings {
                         self.begin_max_resolution_press(dim, cx);
                         return None;
                     }
+                    Some(Btn::SaveDirField(k)) => {
+                        self.begin_save_dir_press(k, cx);
+                        return None;
+                    }
                     _ => {}
                 }
                 self.pressed = self.hover;
@@ -1163,6 +1293,7 @@ impl Settings {
                     self.commit_session_limit();
                     self.commit_filename_format();
                     self.commit_max_resolution();
+                    self.commit_save_dir();
                     self.bitrate_dropdown_open = false;
                     self.audio_output_dropdown_open = false;
                     self.audio_input_dropdown_open = false;
@@ -1207,6 +1338,10 @@ impl Settings {
         // Commit the max-resolution field's input when anything else is clicked.
         if !matches!(btn, Btn::MaxResolutionField(_)) {
             self.commit_max_resolution();
+        }
+        // Commit a save-dir field's input when anything else is clicked.
+        if !matches!(btn, Btn::SaveDirField(_)) {
+            self.commit_save_dir();
         }
         // Close a dropdown on anything other than its own open/select
         // action (the 4 dropdowns are mutually exclusive: opening one closes
@@ -1274,9 +1409,8 @@ impl Settings {
                 }
                 None
             }
-            Btn::DefaultDir(k) => {
-                self.save_dir_mut(k).clear();
-                self.request_redraw();
+            Btn::SaveDirField(k) => {
+                self.focus_save_dir(k);
                 None
             }
             Btn::ReportBug | Btn::CheckForUpdates | Btn::DownloadUpdate => self.activate_about(btn),
@@ -1346,6 +1480,9 @@ impl Settings {
             self.save_dir_mp4.clone(),
             self.save_dir_gif.clone(),
         ];
+        let save_dir_focus = self.save_dir_focus;
+        let save_dir_buf = self.save_dir_buf.clone();
+        let save_dir_cursor = self.save_dir_cursor;
         let external_editor = self.external_editor.clone();
         let launch_at_startup = self.launch_at_startup;
         let record_show_cursor = self.record_show_cursor;
@@ -1541,7 +1678,16 @@ impl Settings {
                     filename_format_cursor,
                     launch_at_startup,
                 ),
-                Tab::Capture => capture_tab::draw_capture(&mut canvas, t, dark, sw, &save_dirs),
+                Tab::Capture => capture_tab::draw_capture(
+                    &mut canvas,
+                    t,
+                    dark,
+                    sw,
+                    &save_dirs,
+                    save_dir_focus,
+                    &save_dir_buf,
+                    save_dir_cursor,
+                ),
                 Tab::Video => video::draw_video(
                     &mut canvas,
                     t,
@@ -1551,6 +1697,9 @@ impl Settings {
                     sw,
                     text,
                     &save_dirs,
+                    save_dir_focus,
+                    &save_dir_buf,
+                    save_dir_cursor,
                     record_show_cursor,
                     record_show_click_ripple,
                     record_click_color_left,
@@ -1672,6 +1821,7 @@ impl Settings {
                         | Btn::UploadField(_)
                         | Btn::FilenameFormatField
                         | Btn::MaxResolutionField(_)
+                        | Btn::SaveDirField(_)
                 ) {
                     continue;
                 }
@@ -1684,7 +1834,6 @@ impl Settings {
                 canvas.fill(*rect, color);
                 let label = match btn {
                     Btn::Browse(_) => "Browse...",
-                    Btn::DefaultDir(_) => "Default",
                     Btn::BrowseEditor => "Browse...",
                     Btn::AddUploader => "+ Add uploader",
                     Btn::Save => "Save",
@@ -1722,7 +1871,8 @@ impl Settings {
                     | Btn::ToggleUploaderEnabled(_)
                     | Btn::UploadField(_)
                     | Btn::FilenameFormatField
-                    | Btn::MaxResolutionField(_) => {
+                    | Btn::MaxResolutionField(_)
+                    | Btn::SaveDirField(_) => {
                         unreachable!()
                     }
                 };
@@ -1754,18 +1904,19 @@ impl Settings {
     }
 }
 
-/// Layout for one General tab "Save to:" row: path field, Browse, Default,
-/// in that order. Browse/Default are pinned to the window's right edge; the
-/// path field stretches to fill the gap, following window width `sw`.
-fn save_row_layout(sw: usize, y: usize) -> (Rect, Rect, Rect) {
+/// Layout for one General tab "Save to:" row: an editable path field, then
+/// Browse, in that order. Browse is pinned to the window's right edge; the
+/// path field stretches to fill the gap, following window width `sw`. The
+/// path field is directly editable (click to focus and type a path);
+/// clearing it back to empty reverts to the built-in default location, so
+/// there's no separate "Default" button.
+fn save_row_layout(sw: usize, y: usize) -> (Rect, Rect) {
     const LABEL_W: usize = 84;
     const BTN_W: usize = 90;
-    const DEFAULT_W: usize = 80;
     const GAP: usize = 6;
     const ROW_H: usize = 26;
 
-    let default_rect = field(sw.saturating_sub(20 + DEFAULT_W), y, DEFAULT_W, ROW_H);
-    let browse_rect = field(default_rect.x0.saturating_sub(GAP + BTN_W), y, BTN_W, ROW_H);
+    let browse_rect = field(sw.saturating_sub(20 + BTN_W), y, BTN_W, ROW_H);
     let path_x0 = CONTENT_X + LABEL_W;
     let path_rect = field(
         path_x0,
@@ -1773,7 +1924,7 @@ fn save_row_layout(sw: usize, y: usize) -> (Rect, Rect, Rect) {
         browse_rect.x0.saturating_sub(path_x0 + GAP),
         ROW_H,
     );
-    (path_rect, browse_rect, default_rect)
+    (path_rect, browse_rect)
 }
 
 /// Default vertical margin between stacked rows within a tab (from one
@@ -1941,16 +2092,14 @@ mod tests {
 
     #[test]
     fn save_row_layout_stretches_path_field_and_anchors_buttons_to_right_edge() {
-        let (path_a, browse_a, default_a) = save_row_layout(WIN_W, 88);
-        let (path_b, browse_b, default_b) = save_row_layout(WIN_W + 300, 88);
+        let (path_a, browse_a) = save_row_layout(WIN_W, 88);
+        let (path_b, browse_b) = save_row_layout(WIN_W + 300, 88);
         // A wider window gives the path field more room.
         assert!(path_b.width() > path_a.width());
-        // Browse/Default follow the window's right edge (their absolute x moves right).
+        // Browse follows the window's right edge (its absolute x moves right).
         assert!(browse_b.x0 > browse_a.x0);
-        assert!(default_b.x0 > default_a.x0);
-        // The three rects don't overlap.
+        // The two rects don't overlap.
         assert!(path_a.x1 <= browse_a.x0);
-        assert!(browse_a.x1 <= default_a.x0);
     }
 
     #[test]

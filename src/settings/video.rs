@@ -362,9 +362,9 @@ impl Settings {
             (SaveKind::Mp4, VIDEO_SAVE_MP4_ROW_Y),
             (SaveKind::Gif, VIDEO_SAVE_GIF_ROW_Y),
         ] {
-            let (_, browse_rect, default_rect) = save_row_layout(sw, y);
+            let (path_rect, browse_rect) = save_row_layout(sw, y);
+            v.push((Btn::SaveDirField(kind), path_rect));
             v.push((Btn::Browse(kind), browse_rect));
-            v.push((Btn::DefaultDir(kind), default_rect));
         }
         v.push((
             Btn::ShowCursorInRecording,
@@ -664,6 +664,9 @@ pub(super) fn draw_video(
     sw: usize,
     text: Option<&TextRenderer>,
     save_dirs: &[String; 3],
+    save_dir_focus: Option<SaveKind>,
+    save_dir_buf: &str,
+    save_dir_cursor: TextCursor,
     record_show_cursor: bool,
     record_show_click_ripple: bool,
     record_click_color_left: u32,
@@ -704,28 +707,68 @@ pub(super) fn draw_video(
     t.draw(canvas, CONTENT_X as f32, 72.0, "Video:", 15.0, DIM);
 
     for (kind_idx, y) in [(1, VIDEO_SAVE_MP4_ROW_Y), (2, VIDEO_SAVE_GIF_ROW_Y)] {
-        let (_, label) = SAVE_KINDS[kind_idx];
-        let (path_rect, _, _) = save_row_layout(sw, y);
+        let (kind, label) = SAVE_KINDS[kind_idx];
+        let (path_rect, _) = save_row_layout(sw, y);
         let baseline = t.baseline_for_center((y + 13) as f32, 15.0);
         t.draw(canvas, CONTENT_X as f32, baseline, label, 15.0, DIM);
 
+        let focused = save_dir_focus == Some(kind);
         let save_dir = &save_dirs[kind_idx];
-        let path_label = if save_dir.is_empty() {
+        canvas.fill(path_rect, FIELD_BG);
+        canvas.stroke(path_rect, if focused { ACCENT } else { 0x0080_8080 });
+        let shown = if focused {
+            save_dir_buf.to_string()
+        } else if save_dir.is_empty() {
             "(default: Pictures/pashari)".to_string()
         } else {
             save_dir.clone()
         };
-        canvas.fill(path_rect, FIELD_BG);
-        let path_color = if save_dir.is_empty() { DIM } else { TEXT };
+        let path_color = if !focused && save_dir.is_empty() {
+            DIM
+        } else {
+            TEXT
+        };
+        let path_text_x0 = path_rect.x0 as f32 + 8.0;
         let path_baseline = t.baseline_for_center((path_rect.y0 + path_rect.y1) as f32 / 2.0, 15.0);
-        t.draw(
+        let (ascent, descent) = t.glyph_vextent(15.0);
+        let caret_y0 = (path_baseline - ascent) as usize;
+        let caret_y1 = (path_baseline - descent) as usize;
+        if focused && let Some((lo, hi)) = save_dir_cursor.selection() {
+            let x0 = path_text_x0 + x_for_char_index(Some(t), &shown, 15.0, lo);
+            let x1 = path_text_x0 + x_for_char_index(Some(t), &shown, 15.0, hi);
+            canvas.fill(
+                Rect {
+                    x0: x0 as usize,
+                    y0: caret_y0,
+                    x1: x1 as usize,
+                    y1: caret_y1,
+                },
+                TEXT_SELECTION_BG,
+            );
+        }
+        t.draw_clipped(
             canvas,
-            path_rect.x0 as f32 + 8.0,
+            path_text_x0,
             path_baseline,
-            &path_label,
+            &shown,
             15.0,
             path_color,
+            path_rect,
         );
+        if focused {
+            let cx = (path_text_x0
+                + x_for_char_index(Some(t), &shown, 15.0, save_dir_cursor.cursor))
+                as usize;
+            canvas.fill(
+                Rect {
+                    x0: cx,
+                    y0: caret_y0,
+                    x1: cx + 1,
+                    y1: caret_y1,
+                },
+                TEXT,
+            );
+        }
     }
 
     // Show-cursor checkbox; box aligns with the dropdown column, label at
