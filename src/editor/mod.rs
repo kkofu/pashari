@@ -13,7 +13,7 @@ use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, NamedKey, PhysicalKey};
 use winit::window::{CursorIcon, Window, WindowId, WindowLevel};
 
 use crate::export::Shot;
@@ -161,6 +161,24 @@ enum Tool {
     NumberMarker,
     Guide,
     Mosaic,
+}
+
+/// A currently-held tool hotkey (`Editor::tool_hold`).
+struct ToolHold {
+    /// The physical key being held. Tracked by physical key rather than
+    /// the tool-hotkey's `LocalKey` (which bakes in modifier state at
+    /// press time) so a modifier released before the letter key doesn't
+    /// break the match on release.
+    key: PhysicalKey,
+    /// The tool this hotkey switched to, so `on_key_up` can tell whether
+    /// something else (an explicit toolbar click, a paste that forces
+    /// Select, ...) already changed the tool since — if so, that wins
+    /// instead of a stale revert.
+    to: Tool,
+    /// The tool to restore if this hold reverts.
+    from: Tool,
+    /// Whether the mouse has been pressed since this hotkey went down.
+    used: bool,
 }
 
 /// Whether the distance from `last` to `p` is at least `FREEHAND_MIN_STEP` (for freehand point thinning).
@@ -418,6 +436,20 @@ pub struct Editor {
     pan: Option<(f64, f64)>,
 
     tool: Tool,
+    /// Bookkeeping for a currently-held tool hotkey (see
+    /// `press_tool_hotkey`); `None` when no tool hotkey is down. A plain
+    /// tap (released without using the tool) just leaves the switch in
+    /// place, same as clicking the toolbar; only a hold that's actually
+    /// used reverts once released. Pressing a second tool hotkey while one
+    /// is already held just replaces this with an independent tap for the
+    /// new key — holding two at once isn't specially supported.
+    tool_hold: Option<ToolHold>,
+    /// Set by `on_key_up` when a hold should revert but a drag it started
+    /// is still in progress — reverting immediately would reset `edit`/
+    /// `dragging` mid-drag (see `activate`'s `EditorBtn::Tool` arm) and
+    /// corrupt it. Applied once that drag's own mouse-up finishes
+    /// (`resolve_pending_tool_revert`).
+    pending_tool_revert: Option<Tool>,
     cursor: (f64, f64),
     drag_start: Option<(i64, i64)>,
     dragging: bool,
@@ -691,6 +723,8 @@ impl Editor {
             home_offset: offset,
             pan: None,
             tool: Tool::Select,
+            tool_hold: None,
+            pending_tool_revert: None,
             cursor: (0.0, 0.0),
             drag_start: None,
             dragging: false,
@@ -1162,6 +1196,8 @@ impl Editor {
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state == ElementState::Pressed {
                     return self.on_key(&event);
+                } else {
+                    self.on_key_up(&event);
                 }
             }
 
@@ -1450,21 +1486,21 @@ impl Editor {
                         self.update_cursor();
                         self.request_redraw();
                     } else if self.keys.tool_select.contains(&pressed) {
-                        self.activate(EditorBtn::Tool(Tool::Select));
+                        self.press_tool_hotkey(Tool::Select, event);
                     } else if self.keys.tool_arrow.contains(&pressed) {
-                        self.activate(EditorBtn::Tool(Tool::Arrow));
+                        self.press_tool_hotkey(Tool::Arrow, event);
                     } else if self.keys.tool_polyline.contains(&pressed) {
-                        self.activate(EditorBtn::Tool(Tool::Polyline));
+                        self.press_tool_hotkey(Tool::Polyline, event);
                     } else if self.keys.tool_draw.contains(&pressed) {
-                        self.activate(EditorBtn::Tool(Tool::Draw));
+                        self.press_tool_hotkey(Tool::Draw, event);
                     } else if self.keys.tool_rect.contains(&pressed) {
-                        self.activate(EditorBtn::Tool(Tool::Rect));
+                        self.press_tool_hotkey(Tool::Rect, event);
                     } else if self.keys.tool_ellipse.contains(&pressed) {
-                        self.activate(EditorBtn::Tool(Tool::Ellipse));
+                        self.press_tool_hotkey(Tool::Ellipse, event);
                     } else if self.keys.tool_text.contains(&pressed) {
-                        self.activate(EditorBtn::Tool(Tool::Text));
+                        self.press_tool_hotkey(Tool::Text, event);
                     } else if self.keys.tool_number_marker.contains(&pressed) {
-                        self.activate(EditorBtn::Tool(Tool::NumberMarker));
+                        self.press_tool_hotkey(Tool::NumberMarker, event);
                     }
                 }
             }
@@ -1473,12 +1509,84 @@ impl Editor {
         false
     }
 
+    /// A tool hotkey was pressed: switches to `t` immediately, exactly
+    /// like a normal (toolbar) tool change — so a plain tap behaves just
+    /// like clicking the tool, staying switched. `tool_hold` only decides
+    /// what happens *if* the key turns out to be held through a use of
+    /// the tool; see `on_key_up`. OS key repeat re-fires `Pressed` for the
+    /// same physical key over and over while it's held; bailing out here
+    /// when it's already tracked avoids re-running the tool-switch side
+    /// effects (clearing selection, finalizing an in-progress freehand
+    /// stroke, ...) on every repeat tick.
+    fn press_tool_hotkey(&mut self, t: Tool, event: &winit::event::KeyEvent) {
+        let key = event.physical_key;
+        if self.tool_hold.as_ref().is_some_and(|h| h.key == key) {
+            return;
+        }
+        self.tool_hold = Some(ToolHold {
+            key,
+            to: t,
+            from: self.tool,
+            used: false,
+        });
+        self.activate(EditorBtn::Tool(t));
+    }
+
+    /// Releasing a tool hotkey's physical key. A tap that never touched
+    /// the mouse just leaves the tool switched (same as a normal tap);
+    /// only a hold actually used while down reverts to the tool active
+    /// before it. If something else already changed the tool since this
+    /// hotkey took effect — an explicit toolbar click, a paste that forces
+    /// Select, ... — that newer choice wins instead of a stale revert.
+    fn on_key_up(&mut self, event: &winit::event::KeyEvent) {
+        let key = event.physical_key;
+        let Some(hold) = self.tool_hold.take_if(|h| h.key == key) else {
+            return;
+        };
+        if !hold.used || self.tool != hold.to {
+            return;
+        }
+        // Reverting mid-drag would reset `edit`/`dragging` and corrupt
+        // whatever the hold's tool was in the middle of drawing, so it's
+        // deferred until that drag's own mouse-up finishes.
+        if self.mid_drag() {
+            self.pending_tool_revert = Some(hold.from);
+        } else {
+            self.activate(EditorBtn::Tool(hold.from));
+        }
+    }
+
+    /// Whether a canvas drag (Select move/resize/rotate, or a
+    /// Draw/Rect/Ellipse/Arrow/Mosaic drag-to-create) is in progress —
+    /// reverting a tool hold mid-drag has to wait until it finishes.
+    fn mid_drag(&self) -> bool {
+        self.dragging || !matches!(self.edit, EditDrag::None)
+    }
+
+    /// Applies a tool-hold revert deferred by `on_key_up` because a drag
+    /// was in progress, once that drag's mouse-up has finished (a no-op
+    /// otherwise). Called unconditionally at the end of every mouse-up.
+    fn resolve_pending_tool_revert(&mut self) {
+        if let Some(t) = self.pending_tool_revert.take() {
+            self.activate(EditorBtn::Tool(t));
+        }
+    }
+
     fn on_mouse(&mut self, state: ElementState) -> bool {
         let (wx, wy) = self.cursor;
         match state {
-            ElementState::Pressed => self.on_press(wx, wy),
+            ElementState::Pressed => {
+                // Marks a held tool hotkey as actually used, so releasing
+                // it later reverts instead of leaving a plain tap's switch
+                // in place (see `ToolHold::used`).
+                if let Some(h) = &mut self.tool_hold {
+                    h.used = true;
+                }
+                self.on_press(wx, wy);
+            }
             ElementState::Released => {
                 if self.picker_drag.take().is_some() {
+                    self.resolve_pending_tool_revert();
                     return false;
                 }
                 if let Some(fd) = self.field_drag.take() {
@@ -1486,6 +1594,7 @@ impl Editor {
                         // A plain click (never crossed the drag threshold): fall through to the usual type-to-edit.
                         self.focus_field(fd.field);
                     }
+                    self.resolve_pending_tool_revert();
                     return false;
                 }
                 if let Some(btn) = self.pressed.take() {
@@ -1531,6 +1640,7 @@ impl Editor {
                         self.request_redraw();
                     }
                 }
+                self.resolve_pending_tool_revert();
             }
         }
         false
