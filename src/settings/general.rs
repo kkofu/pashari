@@ -261,11 +261,15 @@ pub(super) fn draw_general(
         );
     }
     // Format help text (2 lines to fit the width).
+    let sample_time = chrono::Local::now().format("%Y %m %d %H %M %S");
+    let help_text = format!(
+        r#"Date/time: any chrono format, e.g. "%Y %m %d %H %M %S" (="{sample_time}")"#
+    );
     t.draw(
         canvas,
         CONTENT_X as f32,
         (format_rect.y1 + 16) as f32,
-        "Date/time: any chrono format, e.g. %Y %m %d %H %M %S",
+        &help_text,
         13.0,
         DIM,
     );
@@ -273,7 +277,7 @@ pub(super) fn draw_general(
         canvas,
         CONTENT_X as f32,
         (format_rect.y1 + 34) as f32,
-        "Counter: %n (skip existing files) / %#n (persistent), e.g. %04n",
+        r#"Counter: %n (skip existing files) / %#n (persistent), e.g. %04n (="0001")"#,
         13.0,
         DIM,
     );
