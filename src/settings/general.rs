@@ -14,7 +14,7 @@ const FILENAME_FORMAT_ROW_Y: usize = 88;
 const FILENAME_FORMAT_ROW_H: usize = 26;
 
 /// Filename template field: right of the label, follows window width.
-fn filename_format_row_layout(sw: usize) -> Rect {
+pub(super) fn filename_format_row_layout(sw: usize) -> Rect {
     const LABEL_W: usize = 140;
     field(
         CONTENT_X + LABEL_W,
@@ -176,6 +176,7 @@ pub(super) fn draw_general(
     filename_format_focus: bool,
     filename_format_buf: &str,
     filename_format_cursor: TextCursor,
+    ime_preedit: &str,
     launch_at_startup: bool,
 ) {
     let (
@@ -200,7 +201,7 @@ pub(super) fn draw_general(
         canvas,
         CONTENT_X as f32,
         format_label_baseline,
-        "Filename format:",
+        "Filename template:",
         15.0,
         DIM,
     );
@@ -214,7 +215,13 @@ pub(super) fn draw_general(
         },
     );
     let format_shown = if filename_format_focus {
-        filename_format_buf.to_string()
+        if !ime_preedit.is_empty() {
+            let mut s = filename_format_buf.to_string();
+            s.insert_str(filename_format_cursor.cursor, ime_preedit);
+            s
+        } else {
+            filename_format_buf.to_string()
+        }
     } else {
         filename_format.to_string()
     };
@@ -224,7 +231,7 @@ pub(super) fn draw_general(
     let (format_ascent, format_descent) = t.glyph_vextent(15.0);
     let format_caret_y0 = (format_baseline - format_ascent) as usize;
     let format_caret_y1 = (format_baseline - format_descent) as usize;
-    if filename_format_focus && let Some((lo, hi)) = filename_format_cursor.selection() {
+    if filename_format_focus && ime_preedit.is_empty() && let Some((lo, hi)) = filename_format_cursor.selection() {
         let x0 = format_text_x0 + x_for_char_index(Some(t), &format_shown, 15.0, lo);
         let x1 = format_text_x0 + x_for_char_index(Some(t), &format_shown, 15.0, hi);
         canvas.fill(
@@ -247,18 +254,43 @@ pub(super) fn draw_general(
         format_rect,
     );
     if filename_format_focus {
-        let cx = (format_text_x0
-            + x_for_char_index(Some(t), &format_shown, 15.0, filename_format_cursor.cursor))
-            as usize;
-        canvas.fill(
-            Rect {
-                x0: cx,
-                y0: format_caret_y0,
-                x1: cx + 1,
-                y1: format_caret_y1,
-            },
-            TEXT,
-        );
+        if !ime_preedit.is_empty() {
+            let preedit_x0 = format_text_x0 + x_for_char_index(Some(t), &format_shown, 15.0, filename_format_cursor.cursor);
+            let preedit_x1 = format_text_x0 + x_for_char_index(Some(t), &format_shown, 15.0, filename_format_cursor.cursor + ime_preedit.len());
+            let underline_y = format_caret_y1.min(format_rect.y1.saturating_sub(2));
+            canvas.fill(
+                Rect {
+                    x0: preedit_x0 as usize,
+                    y0: underline_y,
+                    x1: preedit_x1 as usize,
+                    y1: underline_y + 1,
+                },
+                ACCENT,
+            );
+            let cx = preedit_x1 as usize;
+            canvas.fill(
+                Rect {
+                    x0: cx,
+                    y0: format_caret_y0,
+                    x1: cx + 1,
+                    y1: format_caret_y1,
+                },
+                TEXT,
+            );
+        } else {
+            let cx = (format_text_x0
+                + x_for_char_index(Some(t), &format_shown, 15.0, filename_format_cursor.cursor))
+                as usize;
+            canvas.fill(
+                Rect {
+                    x0: cx,
+                    y0: format_caret_y0,
+                    x1: cx + 1,
+                    y1: format_caret_y1,
+                },
+                TEXT,
+            );
+        }
     }
     // Format help text (2 lines to fit the width).
     let now = chrono::Local::now();

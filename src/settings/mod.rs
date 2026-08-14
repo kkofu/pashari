@@ -37,7 +37,7 @@ mod video;
 use std::num::NonZeroU32;
 use std::rc::Rc;
 
-use winit::dpi::{LogicalSize, PhysicalPosition};
+use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::keyboard::{ModifiersState, NamedKey, PhysicalKey};
@@ -507,6 +507,9 @@ pub struct Settings {
     /// Caret/selection state for the focused filename template field.
     filename_format_cursor: TextCursor,
 
+    /// In-progress IME composition text (preedit).
+    ime_preedit: String,
+
     hover: Option<Btn>,
     pressed: Option<Btn>,
     text: Option<TextRenderer>,
@@ -578,6 +581,7 @@ impl Settings {
                 .create_window(attrs)
                 .expect("設定ウィンドウ生成に失敗"),
         );
+        window.set_ime_allowed(true);
 
         let context = softbuffer::Context::new(window.clone()).expect("settings context");
         let mut surface =
@@ -686,6 +690,7 @@ impl Settings {
             filename_format_focus: false,
             filename_format_buf: String::new(),
             filename_format_cursor: TextCursor::default(),
+            ime_preedit: String::new(),
             hover: None,
             pressed: None,
             text: TextRenderer::load(),
@@ -928,6 +933,50 @@ impl Settings {
             }
 
             WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
+
+            WindowEvent::Ime(winit::event::Ime::Preedit(text, _)) => {
+                self.ime_preedit = text;
+                self.request_redraw();
+            }
+
+            WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
+                self.ime_preedit.clear();
+                if self.filename_format_focus {
+                    self.filename_format_cursor
+                        .insert(&mut self.filename_format_buf, &text);
+                    self.request_redraw();
+                } else if self.upload_field_focus.is_some() {
+                    self.upload_field_cursor
+                        .insert(&mut self.upload_field_buf, &text);
+                    self.request_redraw();
+                } else if self.session_limit_focus {
+                    let digits: String = text.chars().filter(|c| c.is_ascii_digit()).collect();
+                    if !digits.is_empty() {
+                        self.session_limit_cursor
+                            .insert(&mut self.session_limit_buf, &digits);
+                        self.request_redraw();
+                    }
+                } else if self.max_resolution_focus.is_some() {
+                    let digits: String = text.chars().filter(|c| c.is_ascii_digit()).collect();
+                    if !digits.is_empty() {
+                        self.max_resolution_cursor
+                            .insert(&mut self.max_resolution_buf, &digits);
+                        self.request_redraw();
+                    }
+                } else if self.save_dir_focus.is_some() {
+                    self.save_dir_cursor
+                        .insert(&mut self.save_dir_buf, &text);
+                    self.request_redraw();
+                }
+            }
+
+            WindowEvent::Ime(winit::event::Ime::Disabled) => {
+                if !self.ime_preedit.is_empty() {
+                    self.ime_preedit.clear();
+                    self.request_redraw();
+                }
+            }
+            WindowEvent::Ime(winit::event::Ime::Enabled) => {}
 
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state == ElementState::Pressed {
@@ -1676,6 +1725,7 @@ impl Settings {
                     filename_format_focus,
                     &filename_format_buf,
                     filename_format_cursor,
+                    &self.ime_preedit,
                     launch_at_startup,
                 ),
                 Tab::Capture => capture_tab::draw_capture(
@@ -1901,6 +1951,85 @@ impl Settings {
         }
 
         let _ = buf.present();
+
+        if let Some(w) = self.window.as_ref() {
+            let (ascent, descent) = t.glyph_vextent(15.0);
+            let ime_rect: Option<Rect> = if self.filename_format_focus {
+                let format_rect = general::filename_format_row_layout(sw);
+                let baseline = t.baseline_for_center((format_rect.y0 + format_rect.y1) as f32 / 2.0, 15.0);
+                let text_x0 = format_rect.x0 as f32 + 8.0;
+                let display = if !self.ime_preedit.is_empty() {
+                    let mut s = self.filename_format_buf.clone();
+                    s.insert_str(self.filename_format_cursor.cursor, &self.ime_preedit);
+                    s
+                } else {
+                    self.filename_format_buf.clone()
+                };
+                let cx = (text_x0 + x_for_char_index(Some(t), &display, 15.0, self.filename_format_cursor.cursor + self.ime_preedit.len())) as usize;
+                let y0 = (baseline - ascent) as usize;
+                let y1 = (baseline - descent) as usize;
+                Some(Rect { x0: cx, y0, x1: cx + 1, y1 })
+            } else if let Some(field) = self.upload_field_focus {
+                let i = UPLOAD_FIELDS.iter().position(|&f| f == field).unwrap_or(0);
+                let rect = upload_tab::upload_field_row_rect(i, sw, Some(t));
+                let baseline = t.baseline_for_center((rect.y0 + rect.y1) as f32 / 2.0, 15.0);
+                let text_x0 = rect.x0 as f32 + 8.0;
+                let display = if field.is_secret() {
+                    "*".repeat(self.upload_field_buf.chars().count())
+                } else {
+                    self.upload_field_buf.clone()
+                };
+                let display_idx = if field.is_secret() {
+                    self.upload_field_buf[..self.upload_field_cursor.cursor].chars().count()
+                } else {
+                    self.upload_field_cursor.cursor
+                };
+                let cx = (text_x0 + x_for_char_index(Some(t), &display, 15.0, display_idx)) as usize;
+                let y0 = (baseline - ascent) as usize;
+                let y1 = (baseline - descent) as usize;
+                Some(Rect { x0: cx, y0, x1: cx + 1, y1 })
+            } else if self.session_limit_focus {
+                let (_, fld, _) = editor_tab::session_limit_row_layout(Some(t));
+                let baseline = t.baseline_for_center((fld.y0 + fld.y1) as f32 / 2.0, 15.0);
+                let tw = t.text_width(&self.session_limit_buf, 15.0);
+                let text_x0 = fld.x0 as f32 + (fld.width() as f32 - tw) / 2.0;
+                let cx = (text_x0 + x_for_char_index(Some(t), &self.session_limit_buf, 15.0, self.session_limit_cursor.cursor)) as usize;
+                let y0 = (baseline - ascent) as usize;
+                let y1 = (baseline - descent) as usize;
+                Some(Rect { x0: cx, y0, x1: cx + 1, y1 })
+            } else if let Some(dim) = self.max_resolution_focus {
+                let field_rect = video::max_resolution_row_layout(sw, dim);
+                let baseline = t.baseline_for_center((field_rect.y0 + field_rect.y1) as f32 / 2.0, 15.0);
+                let tw = t.text_width(&self.max_resolution_buf, 15.0);
+                let text_x0 = field_rect.x0 as f32 + (field_rect.width() as f32 - tw) / 2.0;
+                let cx = (text_x0 + x_for_char_index(Some(t), &self.max_resolution_buf, 15.0, self.max_resolution_cursor.cursor)) as usize;
+                let y0 = (baseline - ascent) as usize;
+                let y1 = (baseline - descent) as usize;
+                Some(Rect { x0: cx, y0, x1: cx + 1, y1 })
+            } else if let Some(k) = self.save_dir_focus {
+                let y = match k {
+                    SaveKind::Png => 88,
+                    SaveKind::Mp4 => 88,
+                    SaveKind::Gif => next_row_y(88, 26),
+                };
+                let (path_rect, _) = save_row_layout(sw, y);
+                let baseline = t.baseline_for_center((path_rect.y0 + path_rect.y1) as f32 / 2.0, 15.0);
+                let text_x0 = path_rect.x0 as f32 + 8.0;
+                let cx = (text_x0 + x_for_char_index(Some(t), &self.save_dir_buf, 15.0, self.save_dir_cursor.cursor)) as usize;
+                let y0 = (baseline - ascent) as usize;
+                let y1 = (baseline - descent) as usize;
+                Some(Rect { x0: cx, y0, x1: cx + 1, y1 })
+            } else {
+                None
+            };
+
+            if let Some(r) = ime_rect {
+                w.set_ime_cursor_area(
+                    LogicalPosition::new(r.x0 as f64, r.y0 as f64),
+                    LogicalSize::new(r.width().max(1) as f64, r.height().max(1) as f64),
+                );
+            }
+        }
     }
 }
 

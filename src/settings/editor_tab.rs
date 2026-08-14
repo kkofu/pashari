@@ -30,7 +30,7 @@ fn session_limit_label_w(text: Option<&TextRenderer>) -> usize {
 }
 
 /// (minus button, value field, plus button) rects.
-fn session_limit_row_layout(text: Option<&TextRenderer>) -> (Rect, Rect, Rect) {
+pub(super) fn session_limit_row_layout(text: Option<&TextRenderer>) -> (Rect, Rect, Rect) {
     let x0 = CONTENT_X + session_limit_label_w(text);
     let minus = field(
         x0,

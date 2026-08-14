@@ -310,7 +310,7 @@ impl MaxResDim {
     }
 }
 
-fn max_resolution_row_layout(sw: usize, dim: MaxResDim) -> Rect {
+pub(super) fn max_resolution_row_layout(sw: usize, dim: MaxResDim) -> Rect {
     video_value_rect(sw, dim.row_y(), MAX_RESOLUTION_FIELD_H)
 }
 

@@ -158,7 +158,7 @@ fn upload_field_col_w(text: Option<&TextRenderer>) -> usize {
 }
 
 /// Field rect (right of the label, row `i`); stretches to the window edge.
-fn upload_field_row_rect(i: usize, sw: usize, text: Option<&TextRenderer>) -> Rect {
+pub(super) fn upload_field_row_rect(i: usize, sw: usize, text: Option<&TextRenderer>) -> Rect {
     let y = UPLOADER_FIELDS_Y0 + i * UPLOADER_FIELD_ROW_H;
     let x0 = CONTENT_X + upload_field_col_w(text);
     field(x0, y, sw.saturating_sub(x0 + 20), 26)
