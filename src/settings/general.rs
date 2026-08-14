@@ -261,7 +261,8 @@ pub(super) fn draw_general(
         );
     }
     // Format help text (2 lines to fit the width).
-    let sample_time = chrono::Local::now().format("%Y %m %d %H %M %S");
+    let now = chrono::Local::now();
+    let sample_time = crate::export::render_filename_preview(&format_shown, now, 1, 1);
     let help_text = format!(
         r#"Date/time: any chrono format, e.g. "%Y %m %d %H %M %S" (="{sample_time}")"#
     );

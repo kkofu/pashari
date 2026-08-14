@@ -175,6 +175,17 @@ fn substitute_counter_placeholders(
     sanitize_filename(&out)
 }
 
+/// Renders a template preview string with given date/time and sample counter values.
+pub fn render_filename_preview(
+    template: &str,
+    now: chrono::DateTime<chrono::Local>,
+    persistent_counter: u32,
+    candidate_counter: u32,
+) -> String {
+    let (dated, tokens) = render_skeleton(template, now);
+    substitute_counter_placeholders(&dated, &tokens, Some(persistent_counter), candidate_counter)
+}
+
 /// Replaces characters forbidden in Windows filenames (`\ / : * ? " < > |`)
 /// with `_` (a safeguard for freely-typed templates).
 fn sanitize_filename(name: &str) -> String {
