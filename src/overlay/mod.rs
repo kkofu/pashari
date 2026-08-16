@@ -1202,6 +1202,13 @@ impl Overlay {
             x1: sw,
             y1: sh,
         };
+        let dpi = containing_monitor_index(&self.frozen.monitors, r)
+            .and_then(|i| self.frozen.monitor_dpis.get(i))
+            .copied()
+            .unwrap_or(1.0);
+        let control_w = ((CONTROL_W as f64) * dpi).round() as usize;
+        let control_h = ((CONTROL_H as f64) * dpi).round() as usize;
+        let margin = ((12.0 * dpi).round() as usize).max(1);
         // Clamping against the whole composited canvas could place the
         // control bar in a blind spot belonging to no monitor with
         // mismatched monitor heights/layouts, so clamp within the
@@ -1210,13 +1217,13 @@ impl Overlay {
         // Below the region, else above, else clamped (still local coordinates here).
         let x =
             r.x0.max(bounds.x0)
-                .min(bounds.x1.saturating_sub(CONTROL_W).max(bounds.x0));
-        let y = if r.y1 + 12 + CONTROL_H <= bounds.y1 {
-            r.y1 + 12
-        } else if r.y0 >= bounds.y0 + CONTROL_H + 12 {
-            r.y0 - CONTROL_H - 12
+                .min(bounds.x1.saturating_sub(control_w).max(bounds.x0));
+        let y = if r.y1 + margin + control_h <= bounds.y1 {
+            r.y1 + margin
+        } else if r.y0 >= bounds.y0 + control_h + margin {
+            r.y0 - control_h - margin
         } else {
-            bounds.y1.saturating_sub(CONTROL_H).max(bounds.y0)
+            bounds.y1.saturating_sub(control_h).max(bounds.y0)
         };
         // The control bar is a separate top-level window, so convert to screen absolute coordinates.
         let (ox, oy) = self.frozen.origin;
