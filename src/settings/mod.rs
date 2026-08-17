@@ -41,7 +41,7 @@ use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::keyboard::{ModifiersState, NamedKey, PhysicalKey};
-use winit::window::{Theme, Window};
+use winit::window::{Icon, Theme, Window};
 
 use crate::app::UserEvent;
 use crate::localkey::LocalKey;
@@ -536,6 +536,14 @@ pub struct Settings {
     update_install_error: Option<String>,
 }
 
+fn load_window_icon() -> Icon {
+    let img = image::load_from_memory(include_bytes!("../../assets/icon.ico"))
+        .expect("設定ウィンドウアイコンのデコードに失敗")
+        .to_rgba8();
+    let (w, h) = img.dimensions();
+    Icon::from_rgba(img.into_raw(), w, h).expect("設定ウィンドウアイコンの生成に失敗")
+}
+
 impl Settings {
     /// Opens the window with the current settings. `update_available`/
     /// `update_proxy` are the App's current update-check state (a display
@@ -572,6 +580,7 @@ impl Settings {
 
         let attrs = Window::default_attributes()
             .with_title("pashari Settings")
+            .with_window_icon(Some(load_window_icon()))
             .with_resizable(true)
             .with_min_inner_size(LogicalSize::new(WIN_W as f64, WIN_H as f64))
             .with_position(pos)
