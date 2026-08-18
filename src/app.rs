@@ -309,6 +309,7 @@ impl App {
                     hotkey_editor_tool_number_marker,
                     session_history_limit,
                     launch_at_startup,
+                    open_explorer_after_screenshot,
                     filename_format,
                 } = *saved;
                 let hotkeys_cfg = HotkeyConfig {
@@ -355,6 +356,7 @@ impl App {
                     record_strip_silent_audio,
                     session_history_limit,
                     launch_at_startup,
+                    open_explorer_after_screenshot,
                     filename_format,
                     ..store::snapshot()
                 };
@@ -578,7 +580,9 @@ fn handle_outcome(outcome: Option<Outcome>) {
             Action::Save => match export::save_png(&shot) {
                 Ok(p) => {
                     println!("saved: {}", p.display());
-                    spawn_reveal(p);
+                    if store::snapshot().open_explorer_after_screenshot {
+                        spawn_reveal(p);
+                    }
                 }
                 Err(e) => eprintln!("保存に失敗: {e}"),
             },

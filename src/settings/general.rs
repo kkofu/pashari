@@ -27,6 +27,7 @@ pub(super) fn filename_format_row_layout(sw: usize) -> Rect {
 /// Below the filename field + 2 lines of help text (hence the extra gap).
 const STARTUP_ROW_Y: usize =
     next_row_y_with_extra_gap(FILENAME_FORMAT_ROW_Y, FILENAME_FORMAT_ROW_H, 50);
+const EXPLORER_ROW_Y: usize = STARTUP_ROW_Y + 40;
 
 /// Commit the buffer: trims and keeps it, or falls back to `current` if
 /// empty.
@@ -47,6 +48,10 @@ impl Settings {
                 Btn::LaunchAtStartup,
                 field(CONTENT_X, STARTUP_ROW_Y, 260, 30),
             ),
+            (
+                Btn::OpenExplorerAfterScreenshot,
+                field(CONTENT_X, EXPLORER_ROW_Y, 360, 30),
+            ),
         ]
     }
 
@@ -58,6 +63,11 @@ impl Settings {
             }
             Btn::LaunchAtStartup => {
                 self.launch_at_startup = !self.launch_at_startup;
+                self.request_redraw();
+                None
+            }
+            Btn::OpenExplorerAfterScreenshot => {
+                self.open_explorer_after_screenshot = !self.open_explorer_after_screenshot;
                 self.request_redraw();
                 None
             }
@@ -178,6 +188,7 @@ pub(super) fn draw_general(
     filename_format_cursor: TextCursor,
     ime_preedit: &str,
     launch_at_startup: bool,
+    open_explorer_after_screenshot: bool,
 ) {
     let (
         BG,
@@ -357,6 +368,34 @@ pub(super) fn draw_general(
         15.0,
         TEXT,
     );
+
+    let (_, cb_rect) = buttons
+        .iter()
+        .find(|(b, _)| *b == Btn::OpenExplorerAfterScreenshot)
+        .expect("OpenExplorerAfterScreenshot は General タブに常に存在する");
+    let box_y = cb_rect.y0 + (cb_rect.height() - box_size) / 2;
+    let box_rect = Rect {
+        x0: cb_rect.x0,
+        y0: box_y,
+        x1: cb_rect.x0 + box_size,
+        y1: box_y + box_size,
+    };
+    canvas.fill(box_rect, if open_explorer_after_screenshot { ACCENT } else { FIELD_BG });
+    canvas.stroke(
+        box_rect,
+        if hover == Some(Btn::OpenExplorerAfterScreenshot) {
+            ACCENT
+        } else {
+            0x0080_8080
+        },
+    );
+    if open_explorer_after_screenshot {
+        let (x0, y0, x1, y1) = (box_rect.x0 as i64, box_rect.y0 as i64, box_rect.x1 as i64, box_rect.y1 as i64);
+        canvas.line(x0 + 3, y0 + 9, x0 + 7, y1 - 4, 2, 0x00FF_FFFF);
+        canvas.line(x0 + 7, y1 - 4, x1 - 3, y0 + 3, 2, 0x00FF_FFFF);
+    }
+    let baseline = t.baseline_for_center((cb_rect.y0 + cb_rect.y1) as f32 / 2.0, 15.0);
+    t.draw(canvas, (cb_rect.x0 + box_size + 8) as f32, baseline, "Open Explorer after saving screenshots", 15.0, TEXT);
 }
 
 #[cfg(test)]

@@ -71,6 +71,8 @@ pub struct Config {
     /// The external editor's executable path. Used for Shift+E during
     /// region selection when set (E always opens the bundled Editor).
     pub external_editor: String,
+    /// Whether to open Explorer after saving a screenshot.
+    pub open_explorer_after_screenshot: bool,
 
     /// Max number of Editor session history entries kept in the Recent tab.
     pub session_history_limit: usize,
@@ -114,6 +116,7 @@ impl Default for Config {
             record_fps_presets: vec![15, 24, 30, 60],
             record_fps: 30,
             external_editor: String::new(),
+            open_explorer_after_screenshot: true,
             session_history_limit: 10,
             last_update_check: 0,
             launch_at_startup: false,
@@ -304,6 +307,9 @@ record_fps = {}
 # （通常の Edit / E キーは常に同梱の Editor を開きます）。
 external_editor = '{}'
 
+# スクリーンショット保存後にエクスプローラーを開くかどうか。
+open_explorer_after_screenshot = {}
+
 # 設定GUIの Recent タブに保持する Editor セッション履歴の最大件数。
 session_history_limit = {}
 # 最後にアップデート確認をした時刻（UNIX秒。自動的に更新されます。手編集不要）。
@@ -337,6 +343,7 @@ launch_at_startup = {}
             .join(", "),
         c.record_fps,
         c.external_editor,
+        c.open_explorer_after_screenshot,
         c.session_history_limit,
         c.last_update_check,
         c.launch_at_startup,

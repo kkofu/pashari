@@ -188,6 +188,8 @@ enum Btn {
     BrowseEditor,
     /// "Launch at Windows startup" checkbox (General tab).
     LaunchAtStartup,
+    /// "Open Explorer after saving screenshots" checkbox (General tab).
+    OpenExplorerAfterScreenshot,
     /// The About tab's bug-report button; opens the GitHub issue template
     /// with the app version pre-filled.
     ReportBug,
@@ -318,6 +320,7 @@ pub struct SavedSettings {
     pub hotkey_editor_tool_number_marker: Vec<String>,
     pub session_history_limit: usize,
     pub launch_at_startup: bool,
+    pub open_explorer_after_screenshot: bool,
     pub filename_format: String,
 }
 
@@ -355,6 +358,8 @@ pub struct Settings {
     save_dir_cursor: TextCursor,
     /// "Launch at Windows startup" checkbox (General tab).
     launch_at_startup: bool,
+    /// "Open Explorer after saving screenshots" checkbox (General tab).
+    open_explorer_after_screenshot: bool,
     /// Path to the external editor executable; used for Shift+E if set.
     external_editor: String,
     /// "Show mouse cursor in recordings" checkbox (Video tab).
@@ -629,6 +634,7 @@ impl Settings {
             save_dir_buf: String::new(),
             save_dir_cursor: TextCursor::default(),
             launch_at_startup: cfg.launch_at_startup,
+            open_explorer_after_screenshot: cfg.open_explorer_after_screenshot,
             external_editor: cfg.external_editor,
             record_show_cursor: cfg.record_show_cursor,
             record_bitrate_mbps: cfg.record_bitrate_mbps,
@@ -1441,7 +1447,7 @@ impl Settings {
             Btn::SessionLimitField | Btn::SessionLimitStep(_) | Btn::BrowseEditor => {
                 self.activate_editor(btn)
             }
-            Btn::FilenameFormatField | Btn::LaunchAtStartup => self.activate_general(btn),
+            Btn::FilenameFormatField | Btn::LaunchAtStartup | Btn::OpenExplorerAfterScreenshot => self.activate_general(btn),
             Btn::MaxResolutionField(_)
             | Btn::BitrateDropdown
             | Btn::BitrateOption(_)
@@ -1483,6 +1489,7 @@ impl Settings {
                 save_dir_mp4: self.save_dir_mp4.clone(),
                 save_dir_gif: self.save_dir_gif.clone(),
                 launch_at_startup: self.launch_at_startup,
+                open_explorer_after_screenshot: self.open_explorer_after_screenshot,
                 external_editor: self.external_editor.clone(),
                 record_show_cursor: self.record_show_cursor,
                 record_bitrate_mbps: self.record_bitrate_mbps,
@@ -1543,6 +1550,7 @@ impl Settings {
         let save_dir_cursor = self.save_dir_cursor;
         let external_editor = self.external_editor.clone();
         let launch_at_startup = self.launch_at_startup;
+        let open_explorer_after_screenshot = self.open_explorer_after_screenshot;
         let record_show_cursor = self.record_show_cursor;
         let record_show_click_ripple = self.record_show_click_ripple;
         let record_click_color_left = self.record_click_color_left;
@@ -1736,6 +1744,7 @@ impl Settings {
                     filename_format_cursor,
                     &self.ime_preedit,
                     launch_at_startup,
+                    open_explorer_after_screenshot,
                 ),
                 Tab::Capture => capture_tab::draw_capture(
                     &mut canvas,
@@ -1879,6 +1888,7 @@ impl Settings {
                         | Btn::ToggleUploaderEnabled(_)
                         | Btn::UploadField(_)
                         | Btn::FilenameFormatField
+                        | Btn::OpenExplorerAfterScreenshot
                         | Btn::MaxResolutionField(_)
                         | Btn::SaveDirField(_)
                 ) {
@@ -1899,6 +1909,7 @@ impl Settings {
                     Btn::Cancel => "Cancel",
                     Btn::Tab(_)
                     | Btn::LaunchAtStartup
+                    | Btn::OpenExplorerAfterScreenshot
                     | Btn::ShowCursorInRecording
                     | Btn::ShowClickRipple
                     | Btn::LeftClickColorSwatch
