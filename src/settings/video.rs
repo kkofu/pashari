@@ -172,7 +172,8 @@ fn stacked_option_rect(
     field(x0, y0, w, item_h)
 }
 
-const BITRATE_PRESETS: [(u32, &str); 3] = [(8, "Low"), (15, "Medium"), (30, "High")];
+const BITRATE_PRESETS: [(u32, &str); 4] =
+    [(3, "VeryLow"), (8, "Low"), (15, "Medium"), (30, "High")];
 
 const BITRATE_LABEL: &str = "Video bitrate:";
 const BITRATE_ROW_Y: usize = next_row_y(MAX_HEIGHT_ROW_Y, MAX_RESOLUTION_FIELD_H);
