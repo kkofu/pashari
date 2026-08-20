@@ -1345,7 +1345,7 @@ impl Overlay {
             let cfg = crate::store::snapshot();
             if cfg.record_auto_reencode
                 && path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("mp4"))
-                && let Err(e) = capture::reencode_mp4(&path, cfg.record_reencode_crf)
+                && let Err(e) = capture::reencode_mp4(&path)
             {
                 eprintln!("録画の自動圧縮に失敗: {e}");
             }

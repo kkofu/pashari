@@ -290,7 +290,6 @@ pub struct SavedSettings {
     pub record_show_cursor: bool,
     pub record_bitrate_mbps: u32,
     pub record_auto_reencode: bool,
-    pub record_reencode_crf: u32,
     pub record_max_width: u32,
     pub record_max_height: u32,
     pub record_show_click_ripple: bool,
@@ -373,8 +372,6 @@ pub struct Settings {
     record_bitrate_mbps: u32,
     /// Whether completed MP4 recordings are automatically re-encoded with ffmpeg.
     record_auto_reencode: bool,
-    /// CRF value for automatic MP4 re-encoding.
-    record_reencode_crf: u32,
     /// Whether the bitrate dropdown is open.
     bitrate_dropdown_open: bool,
     /// Recording width cap in px (0 = unlimited), edited via the Video tab
@@ -647,7 +644,6 @@ impl Settings {
             record_show_cursor: cfg.record_show_cursor,
             record_bitrate_mbps: cfg.record_bitrate_mbps,
             record_auto_reencode: cfg.record_auto_reencode,
-            record_reencode_crf: cfg.record_reencode_crf,
             bitrate_dropdown_open: false,
             record_max_width: cfg.record_max_width,
             record_max_height: cfg.record_max_height,
@@ -1505,7 +1501,6 @@ impl Settings {
                 record_show_cursor: self.record_show_cursor,
                 record_bitrate_mbps: self.record_bitrate_mbps,
                 record_auto_reencode: self.record_auto_reencode,
-                record_reencode_crf: self.record_reencode_crf,
                 record_max_width: self.record_max_width,
                 record_max_height: self.record_max_height,
                 record_show_click_ripple: self.record_show_click_ripple,
@@ -1602,7 +1597,6 @@ impl Settings {
         let record_bitrate_mbps = self.record_bitrate_mbps;
         let bitrate_dropdown_open = self.bitrate_dropdown_open;
         let record_auto_reencode = self.record_auto_reencode;
-        let record_reencode_crf = self.record_reencode_crf;
         let record_max_width = self.record_max_width;
         let record_max_height = self.record_max_height;
         let max_resolution_focus = self.max_resolution_focus;
@@ -1791,7 +1785,6 @@ impl Settings {
                     record_bitrate_mbps,
                     bitrate_dropdown_open,
                     record_auto_reencode,
-                    record_reencode_crf,
                     record_max_width,
                     record_max_height,
                     max_resolution_focus,

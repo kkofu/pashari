@@ -42,8 +42,6 @@ pub struct Config {
     pub record_bitrate_mbps: u32,
     /// Whether to re-encode completed MP4 recordings with ffmpeg.
     pub record_auto_reencode: bool,
-    /// CRF value used for automatic MP4 re-encoding (0..=51).
-    pub record_reencode_crf: u32,
     /// Max recording width (px); scaled down preserving aspect ratio if
     /// exceeded. 0 disables it (no limit, recorded at the selection's actual size).
     pub record_max_width: u32,
@@ -109,7 +107,6 @@ impl Default for Config {
             record_show_cursor: true,
             record_bitrate_mbps: 15,
             record_auto_reencode: false,
-            record_reencode_crf: 22,
             record_max_width: 0,
             record_max_height: 0,
             record_show_click_ripple: false,
@@ -286,8 +283,6 @@ record_show_cursor = {}
 record_bitrate_mbps = {}
 # 録画完了後、ffmpeg で再エンコードして元ファイルを置き換えるかどうか。
 record_auto_reencode = {}
-# 自動再エンコードに使う CRF（0..51）。小さいほど高画質・大容量。
-record_reencode_crf = {}
 # 録画の幅/高さの上限（px）。それぞれ 0 なら無効（無制限）。
 record_max_width = {}
 record_max_height = {}
@@ -338,7 +333,6 @@ launch_at_startup = {}
         c.record_show_cursor,
         c.record_bitrate_mbps,
         c.record_auto_reencode,
-        c.record_reencode_crf,
         c.record_max_width,
         c.record_max_height,
         c.record_show_click_ripple,

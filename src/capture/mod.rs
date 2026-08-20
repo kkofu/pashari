@@ -67,9 +67,9 @@ pub enum RecordFormat {
     Gif,
 }
 
-/// Re-encodes an MP4 with ffmpeg and atomically replaces the original only
-/// after the new file has been written successfully.
-pub fn reencode_mp4(path: &Path, crf: u32) -> Result<(), String> {
+/// Re-encodes an MP4 with the first usable hardware HEVC encoder, then falls
+/// back to libx265. The original is replaced only after success.
+pub fn reencode_mp4(path: &Path) -> Result<(), String> {
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -81,25 +81,35 @@ pub fn reencode_mp4(path: &Path, crf: u32) -> Result<(), String> {
     }
     let _ = fs::remove_file(&temp);
 
-    let status = Command::new("ffmpeg")
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-i",
-        ])
-        .arg(path)
-        .args(["-map", "0:v:0", "-map", "0:a?", "-c:v", "libx264"])
-        .args(["-preset", "medium", "-crf"])
-        .arg(crf.to_string())
-        .args(["-c:a", "copy", "-map_metadata", "0"])
-        .arg(&temp)
-        .status()
-        .map_err(|e| format!("ffmpegを起動できません: {e}"))?;
-    if !status.success() {
+    let encoders: [(&str, &[&str]); 4] = [
+        ("hevc_nvenc", &["-preset", "p4", "-rc", "vbr", "-cq", "23", "-b:v", "0"]),
+        ("hevc_qsv", &["-preset", "medium", "-global_quality", "25"]),
+        ("hevc_amf", &["-quality", "quality", "-rc", "qvbr", "-qvbr_quality_level", "25"]),
+        ("libx265", &["-preset", "medium", "-crf", "26"]),
+    ];
+    let mut failures = Vec::new();
+    let mut encoded = false;
+    for (encoder, options) in encoders {
         let _ = fs::remove_file(&temp);
-        return Err(format!("ffmpegが終了コード {:?} を返しました", status.code()));
+        let mut command = Command::new("ffmpeg");
+        let status = command
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+            .arg(path)
+            .args(["-map", "0:v:0", "-map", "0:a?", "-c:v", encoder])
+            .args(options)
+            .args(["-pix_fmt", "yuv420p", "-c:a", "copy", "-map_metadata", "0"])
+            .arg(&temp)
+            .status()
+            .map_err(|e| format!("ffmpegを起動できません: {e}"))?;
+        if status.success() {
+            encoded = true;
+            break;
+        }
+        failures.push(format!("{encoder}: {:?}", status.code()));
+    }
+    if !encoded {
+        let _ = fs::remove_file(&temp);
+        return Err(format!("利用可能なHEVCエンコーダがありません ({})", failures.join(", ")));
     }
 
     fs::rename(path, &backup).map_err(|e| format!("元動画の退避に失敗: {e}"))?;

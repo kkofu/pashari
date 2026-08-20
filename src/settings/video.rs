@@ -227,7 +227,7 @@ const AUDIO_DROPDOWN_OPTION_PAD: usize = 16;
 const AUDIO_DROPDOWN_H: usize = 28;
 
 const AUDIO_OUTPUT_LABEL: &str = "Desktop audio device:";
-const AUDIO_OUTPUT_ROW_Y: usize = next_row_y(CRF_ROW_Y, MAX_RESOLUTION_FIELD_H);
+const AUDIO_OUTPUT_ROW_Y: usize = next_row_y(BITRATE_ROW_Y, BITRATE_DROPDOWN_H);
 const AUDIO_INPUT_LABEL: &str = "Microphone device:";
 const AUDIO_INPUT_ROW_Y: usize = next_row_y(AUDIO_OUTPUT_ROW_Y, AUDIO_DROPDOWN_H);
 
@@ -293,8 +293,6 @@ const MAX_WIDTH_LABEL: &str = "Max width (px, 0=unlimited):";
 const MAX_WIDTH_ROW_Y: usize = next_row_y(VIDEO_SAVE_GIF_ROW_Y, VIDEO_SAVE_ROW_H);
 const MAX_HEIGHT_LABEL: &str = "Max height (px, 0=unlimited):";
 const MAX_HEIGHT_ROW_Y: usize = next_row_y(MAX_WIDTH_ROW_Y, MAX_RESOLUTION_FIELD_H);
-const CRF_LABEL: &str = "compression rate (ffmpeg CRF, 0-51):";
-const CRF_ROW_Y: usize = next_row_y(BITRATE_ROW_Y, BITRATE_DROPDOWN_H);
 
 /// Which resolution-cap field is focused; shares one edit buffer between
 /// the two (same pattern as `UploadField`).
@@ -302,7 +300,6 @@ const CRF_ROW_Y: usize = next_row_y(BITRATE_ROW_Y, BITRATE_DROPDOWN_H);
 pub(super) enum MaxResDim {
     Width,
     Height,
-    Crf,
 }
 
 impl MaxResDim {
@@ -310,7 +307,6 @@ impl MaxResDim {
         match self {
             MaxResDim::Width => MAX_WIDTH_ROW_Y,
             MaxResDim::Height => MAX_HEIGHT_ROW_Y,
-            MaxResDim::Crf => CRF_ROW_Y,
         }
     }
 }
@@ -399,10 +395,6 @@ impl Settings {
         v.push((
             Btn::MaxResolutionField(MaxResDim::Height),
             max_resolution_row_layout(sw, MaxResDim::Height),
-        ));
-        v.push((
-            Btn::MaxResolutionField(MaxResDim::Crf),
-            max_resolution_row_layout(sw, MaxResDim::Crf),
         ));
         v.push((
             Btn::StripSilentAudio,
@@ -561,7 +553,6 @@ impl Settings {
         let current = match dim {
             MaxResDim::Width => self.record_max_width,
             MaxResDim::Height => self.record_max_height,
-            MaxResDim::Crf => self.record_reencode_crf,
         };
         self.max_resolution_buf = current.to_string();
         self.max_resolution_cursor = TextCursor::at_end(&self.max_resolution_buf);
@@ -609,14 +600,6 @@ impl Settings {
             MaxResDim::Height => {
                 self.record_max_height =
                     parse_max_resolution(&self.max_resolution_buf, self.record_max_height);
-            }
-            MaxResDim::Crf => {
-                self.record_reencode_crf = self
-                    .max_resolution_buf
-                    .trim()
-                    .parse::<u32>()
-                    .map(|v| v.min(51))
-                    .unwrap_or(self.record_reencode_crf);
             }
         }
         self.max_resolution_buf.clear();
@@ -702,7 +685,6 @@ pub(super) fn draw_video(
     record_bitrate_mbps: u32,
     bitrate_dropdown_open: bool,
     record_auto_reencode: bool,
-    record_reencode_crf: u32,
     record_max_width: u32,
     record_max_height: u32,
     max_resolution_focus: Option<MaxResDim>,
@@ -1109,7 +1091,6 @@ pub(super) fn draw_video(
     for (dim, label, current) in [
         (MaxResDim::Width, MAX_WIDTH_LABEL, record_max_width),
         (MaxResDim::Height, MAX_HEIGHT_LABEL, record_max_height),
-        (MaxResDim::Crf, CRF_LABEL, record_reencode_crf),
     ] {
         let focused = max_resolution_focus == Some(dim);
         let field_rect = max_resolution_row_layout(sw, dim);
@@ -1121,7 +1102,7 @@ pub(super) fn draw_video(
         canvas.stroke(field_rect, if focused { ACCENT } else { 0x0080_8080 });
         let shown = if focused {
             max_resolution_buf.to_string()
-        } else if dim != MaxResDim::Crf && current == 0 {
+        } else if current == 0 {
             "Unlimited".to_string()
         } else {
             current.to_string()
