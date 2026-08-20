@@ -1345,9 +1345,13 @@ impl Overlay {
             let cfg = crate::store::snapshot();
             if cfg.record_auto_reencode
                 && path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("mp4"))
-                && let Err(e) = capture::reencode_mp4(&path)
             {
-                eprintln!("録画の自動圧縮に失敗: {e}");
+                let reencode_path = path.clone();
+                std::thread::spawn(move || {
+                    if let Err(e) = capture::reencode_mp4(&reencode_path) {
+                        eprintln!("録画の自動圧縮に失敗: {e}");
+                    }
+                });
             }
             self.outcome = Some(Outcome::Recorded(path));
         }

@@ -25,6 +25,8 @@ mod mp4_strip;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
@@ -92,6 +94,8 @@ pub fn reencode_mp4(path: &Path) -> Result<(), String> {
     for (encoder, options) in encoders {
         let _ = fs::remove_file(&temp);
         let mut command = Command::new("ffmpeg");
+        #[cfg(windows)]
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         let status = command
             .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
             .arg(path)
