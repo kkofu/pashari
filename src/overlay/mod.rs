@@ -1342,6 +1342,13 @@ impl Overlay {
             eprintln!("録画停止に失敗: {e}");
         }
         if let Some(path) = self.record_path.take() {
+            let cfg = crate::store::snapshot();
+            if cfg.record_auto_reencode
+                && path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("mp4"))
+                && let Err(e) = capture::reencode_mp4(&path, cfg.record_reencode_crf)
+            {
+                eprintln!("録画の自動圧縮に失敗: {e}");
+            }
             self.outcome = Some(Outcome::Recorded(path));
         }
         self.finish();

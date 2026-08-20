@@ -257,6 +257,8 @@ enum Btn {
     FilenameFormatField,
     /// The Video tab's max-resolution numeric field (click to focus).
     MaxResolutionField(MaxResDim),
+    /// Automatically re-encode completed recordings.
+    AutoReencode,
     Save,
     Cancel,
 }
@@ -287,6 +289,8 @@ pub struct SavedSettings {
     pub external_editor: String,
     pub record_show_cursor: bool,
     pub record_bitrate_mbps: u32,
+    pub record_auto_reencode: bool,
+    pub record_reencode_crf: u32,
     pub record_max_width: u32,
     pub record_max_height: u32,
     pub record_show_click_ripple: bool,
@@ -367,6 +371,10 @@ pub struct Settings {
     /// MP4 recording bitrate in Mbps — one of the values from
     /// `BITRATE_PRESETS`, chosen via the Video tab dropdown and written back on Save.
     record_bitrate_mbps: u32,
+    /// Whether completed MP4 recordings are automatically re-encoded with ffmpeg.
+    record_auto_reencode: bool,
+    /// CRF value for automatic MP4 re-encoding.
+    record_reencode_crf: u32,
     /// Whether the bitrate dropdown is open.
     bitrate_dropdown_open: bool,
     /// Recording width cap in px (0 = unlimited), edited via the Video tab
@@ -638,6 +646,8 @@ impl Settings {
             external_editor: cfg.external_editor,
             record_show_cursor: cfg.record_show_cursor,
             record_bitrate_mbps: cfg.record_bitrate_mbps,
+            record_auto_reencode: cfg.record_auto_reencode,
+            record_reencode_crf: cfg.record_reencode_crf,
             bitrate_dropdown_open: false,
             record_max_width: cfg.record_max_width,
             record_max_height: cfg.record_max_height,
@@ -1458,6 +1468,7 @@ impl Settings {
             | Btn::SampleRateDropdown
             | Btn::SampleRateOption(_)
             | Btn::StripSilentAudio
+            | Btn::AutoReencode
             | Btn::ShowCursorInRecording
             | Btn::ShowClickRipple
             | Btn::LeftClickColorSwatch
@@ -1493,6 +1504,8 @@ impl Settings {
                 external_editor: self.external_editor.clone(),
                 record_show_cursor: self.record_show_cursor,
                 record_bitrate_mbps: self.record_bitrate_mbps,
+                record_auto_reencode: self.record_auto_reencode,
+                record_reencode_crf: self.record_reencode_crf,
                 record_max_width: self.record_max_width,
                 record_max_height: self.record_max_height,
                 record_show_click_ripple: self.record_show_click_ripple,
@@ -1588,6 +1601,8 @@ impl Settings {
         let filename_format_cursor = self.filename_format_cursor;
         let record_bitrate_mbps = self.record_bitrate_mbps;
         let bitrate_dropdown_open = self.bitrate_dropdown_open;
+        let record_auto_reencode = self.record_auto_reencode;
+        let record_reencode_crf = self.record_reencode_crf;
         let record_max_width = self.record_max_width;
         let record_max_height = self.record_max_height;
         let max_resolution_focus = self.max_resolution_focus;
@@ -1775,6 +1790,8 @@ impl Settings {
                     picker_target,
                     record_bitrate_mbps,
                     bitrate_dropdown_open,
+                    record_auto_reencode,
+                    record_reencode_crf,
                     record_max_width,
                     record_max_height,
                     max_resolution_focus,
@@ -1857,6 +1874,7 @@ impl Settings {
                     btn,
                     Btn::Tab(_)
                         | Btn::LaunchAtStartup
+                        | Btn::AutoReencode
                         | Btn::ShowCursorInRecording
                         | Btn::ShowClickRipple
                         | Btn::LeftClickColorSwatch
@@ -1909,6 +1927,7 @@ impl Settings {
                     Btn::Cancel => "Cancel",
                     Btn::Tab(_)
                     | Btn::LaunchAtStartup
+                    | Btn::AutoReencode
                     | Btn::OpenExplorerAfterScreenshot
                     | Btn::ShowCursorInRecording
                     | Btn::ShowClickRipple

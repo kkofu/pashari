@@ -22,7 +22,9 @@ mod mic;
 mod mixer;
 mod mp4_strip;
 
+use std::fs;
 use std::path::Path;
+use std::process::Command;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
@@ -63,6 +65,50 @@ pub fn audio_input_device_names() -> Vec<String> {
 pub enum RecordFormat {
     Mp4,
     Gif,
+}
+
+/// Re-encodes an MP4 with ffmpeg and atomically replaces the original only
+/// after the new file has been written successfully.
+pub fn reencode_mp4(path: &Path, crf: u32) -> Result<(), String> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "録画ファイル名を取得できません".to_string())?;
+    let temp = path.with_file_name(format!(".{file_name}.reencoded.mp4"));
+    let backup = path.with_file_name(format!(".{file_name}.original.mp4"));
+    if backup.exists() {
+        return Err("前回の元動画退避ファイルが残っているため実行できません".to_string());
+    }
+    let _ = fs::remove_file(&temp);
+
+    let status = Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+        ])
+        .arg(path)
+        .args(["-map", "0:v:0", "-map", "0:a?", "-c:v", "libx264"])
+        .args(["-preset", "medium", "-crf"])
+        .arg(crf.to_string())
+        .args(["-c:a", "copy", "-map_metadata", "0"])
+        .arg(&temp)
+        .status()
+        .map_err(|e| format!("ffmpegを起動できません: {e}"))?;
+    if !status.success() {
+        let _ = fs::remove_file(&temp);
+        return Err(format!("ffmpegが終了コード {:?} を返しました", status.code()));
+    }
+
+    fs::rename(path, &backup).map_err(|e| format!("元動画の退避に失敗: {e}"))?;
+    if let Err(e) = fs::rename(&temp, path) {
+        let _ = fs::rename(&backup, path);
+        return Err(format!("圧縮後動画の置換に失敗: {e}"));
+    }
+    fs::remove_file(&backup).map_err(|e| format!("元動画の削除に失敗: {e}"))?;
+    Ok(())
 }
 
 /// A recording request (caller → Recorder). The region is absolute

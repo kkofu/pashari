@@ -39,11 +39,11 @@ fn video_row_rect(sw: usize, y: usize, h: usize) -> Rect {
     )
 }
 
-/// Shared height for the checkbox rows (Show cursor / Show ripple / Strip
-/// silent audio).
+/// Shared height for the checkbox rows.
 const CHECKBOX_ROW_H: usize = 30;
 
-const SHOW_CURSOR_ROW_Y: usize = next_row_y(STRIP_SILENT_AUDIO_ROW_Y, CHECKBOX_ROW_H);
+const AUTO_REENCODE_ROW_Y: usize = next_row_y(STRIP_SILENT_AUDIO_ROW_Y, CHECKBOX_ROW_H);
+const SHOW_CURSOR_ROW_Y: usize = next_row_y(AUTO_REENCODE_ROW_Y, CHECKBOX_ROW_H);
 const SHOW_RIPPLE_ROW_Y: usize = next_row_y(SHOW_CURSOR_ROW_Y, CHECKBOX_ROW_H);
 
 /// Left/right click-ripple color swatches; the whole row only shows while
@@ -227,7 +227,7 @@ const AUDIO_DROPDOWN_OPTION_PAD: usize = 16;
 const AUDIO_DROPDOWN_H: usize = 28;
 
 const AUDIO_OUTPUT_LABEL: &str = "Desktop audio device:";
-const AUDIO_OUTPUT_ROW_Y: usize = next_row_y(BITRATE_ROW_Y, BITRATE_DROPDOWN_H);
+const AUDIO_OUTPUT_ROW_Y: usize = next_row_y(CRF_ROW_Y, MAX_RESOLUTION_FIELD_H);
 const AUDIO_INPUT_LABEL: &str = "Microphone device:";
 const AUDIO_INPUT_ROW_Y: usize = next_row_y(AUDIO_OUTPUT_ROW_Y, AUDIO_DROPDOWN_H);
 
@@ -293,6 +293,8 @@ const MAX_WIDTH_LABEL: &str = "Max width (px, 0=unlimited):";
 const MAX_WIDTH_ROW_Y: usize = next_row_y(VIDEO_SAVE_GIF_ROW_Y, VIDEO_SAVE_ROW_H);
 const MAX_HEIGHT_LABEL: &str = "Max height (px, 0=unlimited):";
 const MAX_HEIGHT_ROW_Y: usize = next_row_y(MAX_WIDTH_ROW_Y, MAX_RESOLUTION_FIELD_H);
+const CRF_LABEL: &str = "compression rate (ffmpeg CRF, 0-51):";
+const CRF_ROW_Y: usize = next_row_y(BITRATE_ROW_Y, BITRATE_DROPDOWN_H);
 
 /// Which resolution-cap field is focused; shares one edit buffer between
 /// the two (same pattern as `UploadField`).
@@ -300,6 +302,7 @@ const MAX_HEIGHT_ROW_Y: usize = next_row_y(MAX_WIDTH_ROW_Y, MAX_RESOLUTION_FIELD
 pub(super) enum MaxResDim {
     Width,
     Height,
+    Crf,
 }
 
 impl MaxResDim {
@@ -307,6 +310,7 @@ impl MaxResDim {
         match self {
             MaxResDim::Width => MAX_WIDTH_ROW_Y,
             MaxResDim::Height => MAX_HEIGHT_ROW_Y,
+            MaxResDim::Crf => CRF_ROW_Y,
         }
     }
 }
@@ -397,8 +401,16 @@ impl Settings {
             max_resolution_row_layout(sw, MaxResDim::Height),
         ));
         v.push((
+            Btn::MaxResolutionField(MaxResDim::Crf),
+            max_resolution_row_layout(sw, MaxResDim::Crf),
+        ));
+        v.push((
             Btn::StripSilentAudio,
             video_row_rect(sw, STRIP_SILENT_AUDIO_ROW_Y, CHECKBOX_ROW_H),
+        ));
+        v.push((
+            Btn::AutoReencode,
+            video_row_rect(sw, AUTO_REENCODE_ROW_Y, CHECKBOX_ROW_H),
         ));
         v.push((Btn::SampleRateDropdown, sample_rate_dropdown_rect(sw)));
         v
@@ -460,6 +472,11 @@ impl Settings {
             }
             Btn::StripSilentAudio => {
                 self.record_strip_silent_audio = !self.record_strip_silent_audio;
+                self.request_redraw();
+                None
+            }
+            Btn::AutoReencode => {
+                self.record_auto_reencode = !self.record_auto_reencode;
                 self.request_redraw();
                 None
             }
@@ -544,6 +561,7 @@ impl Settings {
         let current = match dim {
             MaxResDim::Width => self.record_max_width,
             MaxResDim::Height => self.record_max_height,
+            MaxResDim::Crf => self.record_reencode_crf,
         };
         self.max_resolution_buf = current.to_string();
         self.max_resolution_cursor = TextCursor::at_end(&self.max_resolution_buf);
@@ -591,6 +609,14 @@ impl Settings {
             MaxResDim::Height => {
                 self.record_max_height =
                     parse_max_resolution(&self.max_resolution_buf, self.record_max_height);
+            }
+            MaxResDim::Crf => {
+                self.record_reencode_crf = self
+                    .max_resolution_buf
+                    .trim()
+                    .parse::<u32>()
+                    .map(|v| v.min(51))
+                    .unwrap_or(self.record_reencode_crf);
             }
         }
         self.max_resolution_buf.clear();
@@ -675,6 +701,8 @@ pub(super) fn draw_video(
     picker_target: Option<ClickColorTarget>,
     record_bitrate_mbps: u32,
     bitrate_dropdown_open: bool,
+    record_auto_reencode: bool,
+    record_reencode_crf: u32,
     record_max_width: u32,
     record_max_height: u32,
     max_resolution_focus: Option<MaxResDim>,
@@ -770,6 +798,55 @@ pub(super) fn draw_video(
                 TEXT,
             );
         }
+    }
+
+    // Automatic re-encode checkbox.
+    {
+        let (_, reencode_rect) = buttons
+            .iter()
+            .find(|(b, _)| *b == Btn::AutoReencode)
+            .expect("AutoReencode は Video タブに常に存在する");
+        let box_size = 18;
+        let box_y = reencode_rect.y0 + (reencode_rect.height() - box_size) / 2;
+        let value_x0 = video_value_rect(sw, AUTO_REENCODE_ROW_Y, CHECKBOX_ROW_H).x0;
+        let box_rect = Rect {
+            x0: value_x0,
+            y0: box_y,
+            x1: value_x0 + box_size,
+            y1: box_y + box_size,
+        };
+        canvas.fill(
+            box_rect,
+            if record_auto_reencode { ACCENT } else { FIELD_BG },
+        );
+        canvas.stroke(
+            box_rect,
+            if hover == Some(Btn::AutoReencode) {
+                ACCENT
+            } else {
+                0x0080_8080
+            },
+        );
+        if record_auto_reencode {
+            let (x0, y0, x1, y1) = (
+                box_rect.x0 as i64,
+                box_rect.y0 as i64,
+                box_rect.x1 as i64,
+                box_rect.y1 as i64,
+            );
+            canvas.line(x0 + 3, y0 + 9, x0 + 7, y1 - 4, 2, 0x00FF_FFFF);
+            canvas.line(x0 + 7, y1 - 4, x1 - 3, y0 + 3, 2, 0x00FF_FFFF);
+        }
+        let baseline =
+            t.baseline_for_center((reencode_rect.y0 + reencode_rect.y1) as f32 / 2.0, 15.0);
+        t.draw(
+            canvas,
+            CONTENT_X as f32,
+            baseline,
+            "Automatically re-compress video (then deletes original)",
+            15.0,
+            DIM,
+        );
     }
 
     // Show-cursor checkbox; box aligns with the dropdown column, label at
@@ -1032,6 +1109,7 @@ pub(super) fn draw_video(
     for (dim, label, current) in [
         (MaxResDim::Width, MAX_WIDTH_LABEL, record_max_width),
         (MaxResDim::Height, MAX_HEIGHT_LABEL, record_max_height),
+        (MaxResDim::Crf, CRF_LABEL, record_reencode_crf),
     ] {
         let focused = max_resolution_focus == Some(dim);
         let field_rect = max_resolution_row_layout(sw, dim);
@@ -1043,7 +1121,7 @@ pub(super) fn draw_video(
         canvas.stroke(field_rect, if focused { ACCENT } else { 0x0080_8080 });
         let shown = if focused {
             max_resolution_buf.to_string()
-        } else if current == 0 {
+        } else if dim != MaxResDim::Crf && current == 0 {
             "Unlimited".to_string()
         } else {
             current.to_string()
