@@ -188,7 +188,7 @@ enum Btn {
     BrowseEditor,
     /// "Launch at Windows startup" checkbox (General tab).
     LaunchAtStartup,
-    /// "Open Explorer after saving screenshots" checkbox (General tab).
+    /// "Open Explorer after saving" checkbox (General tab).
     OpenExplorerAfterScreenshot,
     /// The About tab's bug-report button; opens the GitHub issue template
     /// with the app version pre-filled.
@@ -361,7 +361,7 @@ pub struct Settings {
     save_dir_cursor: TextCursor,
     /// "Launch at Windows startup" checkbox (General tab).
     launch_at_startup: bool,
-    /// "Open Explorer after saving screenshots" checkbox (General tab).
+    /// "Open Explorer after saving" checkbox (General tab).
     open_explorer_after_screenshot: bool,
     /// Path to the external editor executable; used for Shift+E if set.
     external_editor: String,

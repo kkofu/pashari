@@ -606,7 +606,9 @@ fn handle_outcome(outcome: Option<Outcome>) {
         },
         Some(Outcome::Recorded(path)) => {
             println!("saved: {}", path.display());
-            spawn_reveal(path);
+            if store::snapshot().open_explorer_after_screenshot {
+                spawn_reveal(path);
+            }
         }
         Some(Outcome::Saved(path)) => {
             println!("saved: {}", path.display());

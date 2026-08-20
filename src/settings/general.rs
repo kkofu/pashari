@@ -395,7 +395,7 @@ pub(super) fn draw_general(
         canvas.line(x0 + 7, y1 - 4, x1 - 3, y0 + 3, 2, 0x00FF_FFFF);
     }
     let baseline = t.baseline_for_center((cb_rect.y0 + cb_rect.y1) as f32 / 2.0, 15.0);
-    t.draw(canvas, (cb_rect.x0 + box_size + 8) as f32, baseline, "Open Explorer after saving screenshots", 15.0, TEXT);
+    t.draw(canvas, (cb_rect.x0 + box_size + 8) as f32, baseline, "Open Explorer after saving", 15.0, TEXT);
 }
 
 #[cfg(test)]
