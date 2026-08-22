@@ -259,6 +259,12 @@ enum Btn {
     MaxResolutionField(MaxResDim),
     /// Automatically re-encode completed recordings.
     AutoReencode,
+    ReencodeDetails,
+    ReencodeReplaceOriginal,
+    ReencodeEncoder,
+    ReencodeEncoderOption(u8),
+    ReencodeQualityField,
+    CloseReencodeDetails,
     Save,
     Cancel,
 }
@@ -290,6 +296,9 @@ pub struct SavedSettings {
     pub record_show_cursor: bool,
     pub record_bitrate_mbps: u32,
     pub record_auto_reencode: bool,
+    pub record_reencode_replace_original: bool,
+    pub record_reencode_encoder: u8,
+    pub record_reencode_quality: u32,
     pub record_max_width: u32,
     pub record_max_height: u32,
     pub record_show_click_ripple: bool,
@@ -372,6 +381,11 @@ pub struct Settings {
     record_bitrate_mbps: u32,
     /// Whether completed MP4 recordings are automatically re-encoded with ffmpeg.
     record_auto_reencode: bool,
+    record_reencode_replace_original: bool,
+    record_reencode_encoder: u8,
+    record_reencode_quality: u32,
+    reencode_details_open: bool,
+    reencode_encoder_open: bool,
     /// Whether the bitrate dropdown is open.
     bitrate_dropdown_open: bool,
     /// Recording width cap in px (0 = unlimited), edited via the Video tab
@@ -644,6 +658,14 @@ impl Settings {
             record_show_cursor: cfg.record_show_cursor,
             record_bitrate_mbps: cfg.record_bitrate_mbps,
             record_auto_reencode: cfg.record_auto_reencode,
+            record_reencode_replace_original: cfg.record_reencode_replace_original,
+            record_reencode_encoder: cfg.record_reencode_encoder.min(3),
+            record_reencode_quality: cfg.record_reencode_quality.clamp(
+                video::reencode_quality_range(cfg.record_reencode_encoder.min(3)).0,
+                51,
+            ),
+            reencode_details_open: false,
+            reencode_encoder_open: false,
             bitrate_dropdown_open: false,
             record_max_width: cfg.record_max_width,
             record_max_height: cfg.record_max_height,
@@ -1350,6 +1372,10 @@ impl Settings {
                         self.begin_max_resolution_press(dim, cx);
                         return None;
                     }
+                    Some(Btn::ReencodeQualityField) => {
+                        self.begin_max_resolution_press(MaxResDim::ReencodeQuality, cx);
+                        return None;
+                    }
                     Some(Btn::SaveDirField(k)) => {
                         self.begin_save_dir_press(k, cx);
                         return None;
@@ -1406,7 +1432,7 @@ impl Settings {
             self.commit_filename_format();
         }
         // Commit the max-resolution field's input when anything else is clicked.
-        if !matches!(btn, Btn::MaxResolutionField(_)) {
+        if !matches!(btn, Btn::MaxResolutionField(_) | Btn::ReencodeQualityField) {
             self.commit_max_resolution();
         }
         // Commit a save-dir field's input when anything else is clicked.
@@ -1465,6 +1491,12 @@ impl Settings {
             | Btn::SampleRateOption(_)
             | Btn::StripSilentAudio
             | Btn::AutoReencode
+            | Btn::ReencodeDetails
+            | Btn::ReencodeReplaceOriginal
+            | Btn::ReencodeEncoder
+            | Btn::ReencodeEncoderOption(_)
+            | Btn::ReencodeQualityField
+            | Btn::CloseReencodeDetails
             | Btn::ShowCursorInRecording
             | Btn::ShowClickRipple
             | Btn::LeftClickColorSwatch
@@ -1501,6 +1533,9 @@ impl Settings {
                 record_show_cursor: self.record_show_cursor,
                 record_bitrate_mbps: self.record_bitrate_mbps,
                 record_auto_reencode: self.record_auto_reencode,
+                record_reencode_replace_original: self.record_reencode_replace_original,
+                record_reencode_encoder: self.record_reencode_encoder,
+                record_reencode_quality: self.record_reencode_quality,
                 record_max_width: self.record_max_width,
                 record_max_height: self.record_max_height,
                 record_show_click_ripple: self.record_show_click_ripple,
@@ -1597,6 +1632,11 @@ impl Settings {
         let record_bitrate_mbps = self.record_bitrate_mbps;
         let bitrate_dropdown_open = self.bitrate_dropdown_open;
         let record_auto_reencode = self.record_auto_reencode;
+        let record_reencode_replace_original = self.record_reencode_replace_original;
+        let record_reencode_encoder = self.record_reencode_encoder;
+        let record_reencode_quality = self.record_reencode_quality;
+        let reencode_details_open = self.reencode_details_open;
+        let reencode_encoder_open = self.reencode_encoder_open;
         let record_max_width = self.record_max_width;
         let record_max_height = self.record_max_height;
         let max_resolution_focus = self.max_resolution_focus;
@@ -1785,6 +1825,11 @@ impl Settings {
                     record_bitrate_mbps,
                     bitrate_dropdown_open,
                     record_auto_reencode,
+                    record_reencode_replace_original,
+                    record_reencode_encoder,
+                    record_reencode_quality,
+                    reencode_details_open,
+                    reencode_encoder_open,
                     record_max_width,
                     record_max_height,
                     max_resolution_focus,
@@ -1863,11 +1908,23 @@ impl Settings {
             // Buttons (tabs, checkboxes, token fields, and Hotkeys rows are
             // drawn individually above, so excluded here).
             for (btn, rect) in &buttons {
+                if tab == Tab::Video && reencode_details_open {
+                    let panel = video::reencode_panel_rect_for_draw(sw);
+                    if rect.x0 < panel.x1 && panel.x0 < rect.x1 && rect.y0 < panel.y1 && panel.y0 < rect.y1 {
+                        continue;
+                    }
+                }
                 if matches!(
                     btn,
                     Btn::Tab(_)
                         | Btn::LaunchAtStartup
                         | Btn::AutoReencode
+                        | Btn::ReencodeDetails
+                        | Btn::ReencodeReplaceOriginal
+            | Btn::ReencodeEncoder
+            | Btn::ReencodeEncoderOption(_)
+            | Btn::ReencodeQualityField
+                        | Btn::CloseReencodeDetails
                         | Btn::ShowCursorInRecording
                         | Btn::ShowClickRipple
                         | Btn::LeftClickColorSwatch
@@ -1921,6 +1978,12 @@ impl Settings {
                     Btn::Tab(_)
                     | Btn::LaunchAtStartup
                     | Btn::AutoReencode
+                    | Btn::ReencodeDetails
+                    | Btn::ReencodeReplaceOriginal
+            | Btn::ReencodeEncoder
+            | Btn::ReencodeEncoderOption(_)
+            | Btn::ReencodeQualityField
+                    | Btn::CloseReencodeDetails
                     | Btn::OpenExplorerAfterScreenshot
                     | Btn::ShowCursorInRecording
                     | Btn::ShowClickRipple

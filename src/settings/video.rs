@@ -22,6 +22,9 @@ const VIDEO_SAVE_MP4_ROW_Y: usize = 88;
 const VIDEO_SAVE_ROW_H: usize = 26;
 const VIDEO_SAVE_GIF_ROW_Y: usize = next_row_y(VIDEO_SAVE_MP4_ROW_Y, VIDEO_SAVE_ROW_H);
 
+/// Re-encode quality value box.
+const REENCODE_QUALITY_W: usize = 100;
+
 /// Fixed-width value rect, right-aligned.
 fn video_value_rect(sw: usize, y: usize, h: usize) -> Rect {
     let x1 = sw.saturating_sub(VIDEO_VALUE_MARGIN);
@@ -43,6 +46,26 @@ fn video_row_rect(sw: usize, y: usize, h: usize) -> Rect {
 const CHECKBOX_ROW_H: usize = 30;
 
 const AUTO_REENCODE_ROW_Y: usize = next_row_y(STRIP_SILENT_AUDIO_ROW_Y, CHECKBOX_ROW_H);
+const REENCODE_PANEL_W: usize = 520;
+const REENCODE_PANEL_H: usize = 214;
+const REENCODE_DETAILS_Y: usize = AUTO_REENCODE_ROW_Y.saturating_sub(REENCODE_PANEL_H + 8);
+
+const REENCODE_ENCODER_LABELS: [&str; 4] = [
+    "NVENC (recommended for NVIDIA GPUs)",
+    "QSV (recommended for Intel GPUs)",
+    "AMF (recommended for AMD GPUs)",
+    "libx265 (CPU)",
+];
+const REENCODE_QUALITY_LABELS: [&str; 4] = [
+    "Quality value (cq, 0-51, lower is better quality):",
+    "Quality value (global_quality, 0-51, lower is better quality):",
+    "Quality value (qvbr_quality_level, 1-51, higher is better quality):",
+    "Quality value (crf, 0-51, lower is better quality):",
+];
+
+pub(super) fn reencode_quality_range(encoder: u8) -> (u32, u32) {
+    if encoder.min(3) == 2 { (1, 51) } else { (0, 51) }
+}
 const SHOW_CURSOR_ROW_Y: usize = next_row_y(AUTO_REENCODE_ROW_Y, CHECKBOX_ROW_H);
 const SHOW_RIPPLE_ROW_Y: usize = next_row_y(SHOW_CURSOR_ROW_Y, CHECKBOX_ROW_H);
 
@@ -300,6 +323,7 @@ const MAX_HEIGHT_ROW_Y: usize = next_row_y(MAX_WIDTH_ROW_Y, MAX_RESOLUTION_FIELD
 pub(super) enum MaxResDim {
     Width,
     Height,
+    ReencodeQuality,
 }
 
 impl MaxResDim {
@@ -307,12 +331,31 @@ impl MaxResDim {
         match self {
             MaxResDim::Width => MAX_WIDTH_ROW_Y,
             MaxResDim::Height => MAX_HEIGHT_ROW_Y,
+            MaxResDim::ReencodeQuality => REENCODE_DETAILS_Y,
         }
     }
 }
 
 pub(super) fn max_resolution_row_layout(sw: usize, dim: MaxResDim) -> Rect {
-    video_value_rect(sw, dim.row_y(), MAX_RESOLUTION_FIELD_H)
+    if dim == MaxResDim::ReencodeQuality {
+        reencode_quality_rect(sw)
+    } else {
+        video_value_rect(sw, dim.row_y(), MAX_RESOLUTION_FIELD_H)
+    }
+}
+
+fn reencode_panel_rect(sw: usize) -> Rect {
+    let x = CONTENT_X + 30;
+    field(x, REENCODE_DETAILS_Y, REENCODE_PANEL_W.min(sw.saturating_sub(x + 20)), REENCODE_PANEL_H)
+}
+
+pub(super) fn reencode_panel_rect_for_draw(sw: usize) -> Rect {
+    reencode_panel_rect(sw)
+}
+
+fn reencode_quality_rect(sw: usize) -> Rect {
+    let panel = reencode_panel_rect(sw);
+    field(panel.x1.saturating_sub(VIDEO_VALUE_W - 104), panel.y0 + 112, REENCODE_QUALITY_W, 26)
 }
 
 /// Parse and clamp the buffer; falls back to `current` if empty/invalid.
@@ -358,6 +401,19 @@ impl Settings {
                 v.push((Btn::SampleRateOption(val), sample_rate_option_rect(sw, i)));
             }
         }
+        if self.reencode_details_open {
+            let panel = reencode_panel_rect(sw);
+            v.push((Btn::CloseReencodeDetails, field(panel.x1.saturating_sub(76), panel.y0 + 8, 60, 24)));
+            v.push((Btn::ReencodeReplaceOriginal, field(panel.x0 + 16, panel.y0 + 44, panel.width() - 32, 28)));
+            let encoder = field(panel.x0 + 110, panel.y0 + 78, panel.width().saturating_sub(126), 28);
+            if self.reencode_encoder_open {
+                for i in 0..4 {
+                    v.push((Btn::ReencodeEncoderOption(i), field(encoder.x0, encoder.y1 + usize::from(i) * 26, encoder.width(), 26)));
+                }
+            }
+            v.push((Btn::ReencodeEncoder, encoder));
+            v.push((Btn::ReencodeQualityField, reencode_quality_rect(sw)));
+        }
 
         for (kind, y) in [
             (SaveKind::Mp4, VIDEO_SAVE_MP4_ROW_Y),
@@ -399,6 +455,11 @@ impl Settings {
         v.push((
             Btn::StripSilentAudio,
             video_row_rect(sw, STRIP_SILENT_AUDIO_ROW_Y, CHECKBOX_ROW_H),
+        ));
+        v.push((
+            Btn::ReencodeDetails,
+            field(video_value_rect(sw, AUTO_REENCODE_ROW_Y, CHECKBOX_ROW_H).x0 + 32,
+                AUTO_REENCODE_ROW_Y + 2, 78, 26),
         ));
         v.push((
             Btn::AutoReencode,
@@ -470,6 +531,38 @@ impl Settings {
             Btn::AutoReencode => {
                 self.record_auto_reencode = !self.record_auto_reencode;
                 self.request_redraw();
+                None
+            }
+            Btn::ReencodeDetails => {
+                self.reencode_details_open = true;
+                self.request_redraw();
+                None
+            }
+            Btn::CloseReencodeDetails => {
+                self.reencode_details_open = false;
+                self.reencode_encoder_open = false;
+                self.commit_max_resolution();
+                self.request_redraw();
+                None
+            }
+            Btn::ReencodeReplaceOriginal => {
+                self.record_reencode_replace_original = !self.record_reencode_replace_original;
+                self.request_redraw();
+                None
+            }
+            Btn::ReencodeEncoder => {
+                self.reencode_encoder_open = !self.reencode_encoder_open;
+                self.request_redraw();
+                None
+            }
+            Btn::ReencodeEncoderOption(value) => {
+                self.record_reencode_encoder = value.min(3);
+                self.reencode_encoder_open = false;
+                self.request_redraw();
+                None
+            }
+            Btn::ReencodeQualityField => {
+                self.focus_max_resolution(MaxResDim::ReencodeQuality);
                 None
             }
             Btn::ShowCursorInRecording => {
@@ -553,6 +646,7 @@ impl Settings {
         let current = match dim {
             MaxResDim::Width => self.record_max_width,
             MaxResDim::Height => self.record_max_height,
+            MaxResDim::ReencodeQuality => self.record_reencode_quality,
         };
         self.max_resolution_buf = current.to_string();
         self.max_resolution_cursor = TextCursor::at_end(&self.max_resolution_buf);
@@ -600,6 +694,12 @@ impl Settings {
             MaxResDim::Height => {
                 self.record_max_height =
                     parse_max_resolution(&self.max_resolution_buf, self.record_max_height);
+            }
+            MaxResDim::ReencodeQuality => {
+                if let Ok(value) = self.max_resolution_buf.trim().parse::<u32>() {
+                    let (min, max) = reencode_quality_range(self.record_reencode_encoder);
+                    self.record_reencode_quality = value.clamp(min, max);
+                }
             }
         }
         self.max_resolution_buf.clear();
@@ -685,6 +785,11 @@ pub(super) fn draw_video(
     record_bitrate_mbps: u32,
     bitrate_dropdown_open: bool,
     record_auto_reencode: bool,
+    record_reencode_replace_original: bool,
+    record_reencode_encoder: u8,
+    record_reencode_quality: u32,
+    reencode_details_open: bool,
+    reencode_encoder_open: bool,
     record_max_width: u32,
     record_max_height: u32,
     max_resolution_focus: Option<MaxResDim>,
@@ -825,10 +930,18 @@ pub(super) fn draw_video(
             canvas,
             CONTENT_X as f32,
             baseline,
-            "Automatically re-compress video (then deletes original)",
+            "Automatically re-encode recording",
             15.0,
             DIM,
         );
+        let details = buttons
+            .iter()
+            .find(|(b, _)| *b == Btn::ReencodeDetails)
+            .map(|(_, r)| *r)
+            .expect("ReencodeDetails は Video タブに常に存在する");
+        canvas.fill(details, BTN_BG);
+        canvas.stroke(details, if hover == Some(Btn::ReencodeDetails) { ACCENT } else { 0x0080_8080 });
+        t.draw(canvas, details.x0 as f32 + 10.0, t.baseline_for_center((details.y0 + details.y1) as f32 / 2.0, 15.0), "Details...", 15.0, TEXT);
     }
 
     // Show-cursor checkbox; box aligns with the dropdown column, label at
@@ -1351,6 +1464,138 @@ pub(super) fn draw_video(
             y1: last.y1,
         };
         canvas.stroke(list_rect, 0x0080_8080);
+    }
+
+    if reencode_details_open {
+        let panel = reencode_panel_rect(sw);
+        canvas.fill(panel, BTN_BG);
+        canvas.stroke(panel, ACCENT);
+        t.draw(
+            canvas,
+            (panel.x0 + 16) as f32,
+            (panel.y0 + 28) as f32,
+            "Re-encoding details",
+            17.0,
+            TEXT,
+        );
+        let close = buttons.iter().find(|(b, _)| *b == Btn::CloseReencodeDetails).map(|(_, r)| *r).unwrap();
+        canvas.fill(close, if hover == Some(Btn::CloseReencodeDetails) { hover_tint(BTN_BG) } else { BTN_BG });
+        canvas.stroke(close, if hover == Some(Btn::CloseReencodeDetails) { ACCENT } else { 0x0080_8080 });
+        t.draw(
+            canvas,
+            (close.x0 + 12) as f32,
+            t.baseline_for_center((close.y0 + close.y1) as f32 / 2.0, 15.0),
+            "Close",
+            15.0,
+            TEXT,
+        );
+        let replace = buttons.iter().find(|(b, _)| *b == Btn::ReencodeReplaceOriginal).map(|(_, r)| *r).unwrap();
+        canvas.fill(replace, if hover == Some(Btn::ReencodeReplaceOriginal) { hover_tint(BTN_BG) } else { BTN_BG });
+        let box_rect = field(replace.x0, replace.y0 + 5, 18, 18);
+        canvas.fill(box_rect, if record_reencode_replace_original { ACCENT } else { FIELD_BG });
+        canvas.stroke(box_rect, if hover == Some(Btn::ReencodeReplaceOriginal) { ACCENT } else { 0x0080_8080 });
+        if record_reencode_replace_original {
+            canvas.line(box_rect.x0 as i64 + 3, box_rect.y0 as i64 + 9, box_rect.x0 as i64 + 7, box_rect.y1 as i64 - 4, 2, 0x00FF_FFFF);
+            canvas.line(box_rect.x0 as i64 + 7, box_rect.y1 as i64 - 4, box_rect.x1 as i64 - 3, box_rect.y0 as i64 + 3, 2, 0x00FF_FFFF);
+        }
+        t.draw(
+            canvas,
+            (box_rect.x1 + 10) as f32,
+            t.baseline_for_center(
+                (replace.y0 + replace.y1) as f32 / 2.0,
+                15.0,
+            ),
+            "Replace original video",
+            15.0,
+            DIM,
+        );
+        let encoder = buttons.iter().find(|(b, _)| *b == Btn::ReencodeEncoder).map(|(_, r)| *r).unwrap();
+        let encoder_name = REENCODE_ENCODER_LABELS[record_reencode_encoder.min(3) as usize];
+        t.draw(
+            canvas,
+            (panel.x0 + 16) as f32,
+            t.baseline_for_center(
+                (encoder.y0 + encoder.y1) as f32 / 2.0,
+                15.0,
+            ),
+            "Encoder:",
+            15.0,
+            DIM,
+        );
+        canvas.fill(encoder, if hover == Some(Btn::ReencodeEncoder) { hover_tint(FIELD_BG) } else { FIELD_BG });
+        canvas.stroke(encoder, if hover == Some(Btn::ReencodeEncoder) || reencode_encoder_open { ACCENT } else { 0x0080_8080 });
+        t.draw(
+            canvas,
+            (encoder.x0 + 8) as f32,
+            t.baseline_for_center(
+                (encoder.y0 + encoder.y1) as f32 / 2.0,
+                15.0,
+            ),
+            encoder_name,
+            15.0,
+            TEXT,
+        );
+        let (cx, cy) = (encoder.x1 as i64 - 14, (encoder.y0 + encoder.y1) as i64 / 2);
+        canvas.line(cx - 4, cy - 2, cx, cy + 2, 2, TEXT);
+        canvas.line(cx, cy + 2, cx + 4, cy - 2, 2, TEXT);
+        let quality_label = REENCODE_QUALITY_LABELS[record_reencode_encoder.min(3) as usize];
+        t.draw_clipped(
+            canvas,
+            (panel.x0 + 16) as f32,
+            (panel.y0 + 130) as f32,
+            quality_label,
+            15.0,
+            DIM,
+            field(
+                panel.x0 + 16,
+                panel.y0 + 108,
+                panel.width().saturating_sub(32),
+                28,
+            ),
+        );
+        let quality = reencode_quality_rect(sw);
+        let focused = max_resolution_focus == Some(MaxResDim::ReencodeQuality);
+        canvas.fill(quality, if hover == Some(Btn::ReencodeQualityField) { hover_tint(FIELD_BG) } else { FIELD_BG });
+        canvas.stroke(quality, if focused { ACCENT } else { 0x0080_8080 });
+        let shown = if focused { max_resolution_buf.to_string() } else { record_reencode_quality.to_string() };
+        t.draw(
+            canvas,
+            quality.x0 as f32 + 8.0,
+            t.baseline_for_center(
+                (quality.y0 + quality.y1) as f32 / 2.0,
+                15.0,
+            ),
+            &shown,
+            15.0,
+            TEXT,
+        );
+        if reencode_encoder_open {
+            for i in 0..4u8 {
+                let option = field(encoder.x0, encoder.y1 + usize::from(i) * 26, encoder.width(), 26);
+                let selected = i == record_reencode_encoder;
+                let base = if selected {
+                    UPLOADER_ACTIVE_BG
+                } else if hover == Some(Btn::ReencodeEncoderOption(i)) {
+                    hover_tint(FIELD_BG)
+                } else {
+                    FIELD_BG
+                };
+                canvas.fill(option, base);
+                canvas.stroke(option, 0x0080_8080);
+                t.draw_clipped(
+                    canvas,
+                    (option.x0 + 8) as f32,
+                    t.baseline_for_center(
+                        (option.y0 + option.y1) as f32 / 2.0,
+                        15.0,
+                    ),
+                    REENCODE_ENCODER_LABELS[usize::from(i)],
+                    15.0,
+                    TEXT,
+                    option,
+                );
+            }
+        }
     }
 }
 

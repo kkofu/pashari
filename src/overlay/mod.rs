@@ -1348,7 +1348,12 @@ impl Overlay {
             {
                 let reencode_path = path.clone();
                 std::thread::spawn(move || {
-                    if let Err(e) = capture::reencode_mp4(&reencode_path) {
+                    if let Err(e) = capture::reencode_mp4(
+                        &reencode_path,
+                        cfg.record_reencode_encoder,
+                        cfg.record_reencode_quality,
+                        cfg.record_reencode_replace_original,
+                    ) {
                         eprintln!("録画の自動圧縮に失敗: {e}");
                     }
                 });
