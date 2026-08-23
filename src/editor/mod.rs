@@ -14,7 +14,7 @@ use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key, NamedKey, PhysicalKey};
-use winit::window::{CursorIcon, Window, WindowId, WindowLevel};
+use winit::window::{CursorIcon, Icon, Window, WindowId, WindowLevel};
 
 use crate::export::Shot;
 use crate::localkey::LocalKey;
@@ -593,6 +593,14 @@ fn fit_scale(w: usize, h: usize, max_w: usize, max_h: usize) -> f64 {
     s.clamp(0.05, 1.0)
 }
 
+fn load_window_icon() -> Icon {
+    let img = image::load_from_memory(include_bytes!("../../assets/icon.ico"))
+        .expect("エディタウィンドウアイコンのデコードに失敗")
+        .to_rgba8();
+    let (w, h) = img.dimensions();
+    Icon::from_rgba(img.into_raw(), w, h).expect("エディタウィンドウアイコンの生成に失敗")
+}
+
 /// `Editor::new`'s initial state. `Blank` = empty; `Shot` = the
 /// just-captured image as the sole Image item (the original behavior);
 /// `Session` = opens directly with the item set restored from a saved session.
@@ -680,6 +688,7 @@ impl Editor {
 
         let attrs = Window::default_attributes()
             .with_title("pashari Editor")
+            .with_window_icon(Some(load_window_icon()))
             .with_resizable(true)
             .with_min_inner_size(LogicalSize::new(MIN_W as f64, MIN_H as f64))
             .with_window_level(WindowLevel::Normal)
