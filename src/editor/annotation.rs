@@ -172,6 +172,16 @@ impl Xform {
     }
 }
 
+/// Converts the world-to-logical transform into the physical-pixel space used
+/// by direct buffer operations (image, mosaic, and guide dimming).
+fn physical_xform(canvas: &Canvas, t: &Xform) -> Xform {
+    Xform {
+        scale: t.scale * canvas.scale,
+        ox: t.ox * canvas.scale,
+        oy: t.oy * canvas.scale,
+    }
+}
+
 /// Draws every annotation plus the drag preview, if any (the caret for
 /// text being edited is drawn by the caller). When `export` is true (baking
 /// in for export), the guide isn't drawn — it's editor-only and never
@@ -501,6 +511,7 @@ fn paint_image(
     pixels: &[u32],
     t: &Xform,
 ) {
+    let t = physical_xform(canvas, t);
     if src_w <= 0 || src_h <= 0 {
         return;
     }
@@ -664,6 +675,7 @@ fn paint_mosaic(
     seed: u32,
     t: &Xform,
 ) {
+    let t = physical_xform(canvas, t);
     let (x0, y0, x1, y1) = rect_norm_f64(r);
     let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
     let (halfw, halfh) = ((x1 - x0) / 2.0, (y1 - y0) / 2.0);
@@ -2380,6 +2392,7 @@ pub(super) fn dim_outside_guide(
     let Some(r) = guide else {
         return;
     };
+    let t = physical_xform(canvas, t);
     let (gx0, gy0) = t.map((r.0, r.1));
     let (gx1, gy1) = t.map((r.2, r.3));
     let (gx0, gx1) = (gx0.min(gx1), gx0.max(gx1));
