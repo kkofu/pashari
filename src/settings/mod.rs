@@ -41,7 +41,7 @@ use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::keyboard::{ModifiersState, NamedKey, PhysicalKey};
-use winit::window::{Theme, Window};
+use winit::window::{Icon, Theme, Window};
 
 use crate::app::UserEvent;
 use crate::localkey::LocalKey;
@@ -188,6 +188,8 @@ enum Btn {
     BrowseEditor,
     /// "Launch at Windows startup" checkbox (General tab).
     LaunchAtStartup,
+    /// "Open Explorer after saving" checkbox (General tab).
+    OpenExplorerAfterScreenshot,
     /// The About tab's bug-report button; opens the GitHub issue template
     /// with the app version pre-filled.
     ReportBug,
@@ -255,6 +257,14 @@ enum Btn {
     FilenameFormatField,
     /// The Video tab's max-resolution numeric field (click to focus).
     MaxResolutionField(MaxResDim),
+    /// Automatically re-encode completed recordings.
+    AutoReencode,
+    ReencodeDetails,
+    ReencodeReplaceOriginal,
+    ReencodeEncoder,
+    ReencodeEncoderOption(u8),
+    ReencodeQualityField,
+    CloseReencodeDetails,
     Save,
     Cancel,
 }
@@ -285,6 +295,10 @@ pub struct SavedSettings {
     pub external_editor: String,
     pub record_show_cursor: bool,
     pub record_bitrate_mbps: u32,
+    pub record_auto_reencode: bool,
+    pub record_reencode_replace_original: bool,
+    pub record_reencode_encoder: u8,
+    pub record_reencode_quality: u32,
     pub record_max_width: u32,
     pub record_max_height: u32,
     pub record_show_click_ripple: bool,
@@ -318,6 +332,7 @@ pub struct SavedSettings {
     pub hotkey_editor_tool_number_marker: Vec<String>,
     pub session_history_limit: usize,
     pub launch_at_startup: bool,
+    pub open_explorer_after_screenshot: bool,
     pub filename_format: String,
 }
 
@@ -355,6 +370,8 @@ pub struct Settings {
     save_dir_cursor: TextCursor,
     /// "Launch at Windows startup" checkbox (General tab).
     launch_at_startup: bool,
+    /// "Open Explorer after saving" checkbox (General tab).
+    open_explorer_after_screenshot: bool,
     /// Path to the external editor executable; used for Shift+E if set.
     external_editor: String,
     /// "Show mouse cursor in recordings" checkbox (Video tab).
@@ -362,6 +379,13 @@ pub struct Settings {
     /// MP4 recording bitrate in Mbps — one of the values from
     /// `BITRATE_PRESETS`, chosen via the Video tab dropdown and written back on Save.
     record_bitrate_mbps: u32,
+    /// Whether completed MP4 recordings are automatically re-encoded with ffmpeg.
+    record_auto_reencode: bool,
+    record_reencode_replace_original: bool,
+    record_reencode_encoder: u8,
+    record_reencode_quality: u32,
+    reencode_details_open: bool,
+    reencode_encoder_open: bool,
     /// Whether the bitrate dropdown is open.
     bitrate_dropdown_open: bool,
     /// Recording width cap in px (0 = unlimited), edited via the Video tab
@@ -538,6 +562,14 @@ pub struct Settings {
     update_install_error: Option<String>,
 }
 
+fn load_window_icon() -> Icon {
+    let img = image::load_from_memory(include_bytes!("../../assets/icon.ico"))
+        .expect("設定ウィンドウアイコンのデコードに失敗")
+        .to_rgba8();
+    let (w, h) = img.dimensions();
+    Icon::from_rgba(img.into_raw(), w, h).expect("設定ウィンドウアイコンの生成に失敗")
+}
+
 impl Settings {
     /// Opens the window with the current settings. `update_available`/
     /// `update_proxy` are the App's current update-check state (a display
@@ -574,6 +606,7 @@ impl Settings {
 
         let attrs = Window::default_attributes()
             .with_title("pashari Settings")
+            .with_window_icon(Some(load_window_icon()))
             .with_resizable(true)
             .with_min_inner_size(LogicalSize::new(WIN_W as f64, WIN_H as f64))
             .with_position(pos)
@@ -622,9 +655,19 @@ impl Settings {
             save_dir_buf: String::new(),
             save_dir_cursor: TextCursor::default(),
             launch_at_startup: cfg.launch_at_startup,
+            open_explorer_after_screenshot: cfg.open_explorer_after_screenshot,
             external_editor: cfg.external_editor,
             record_show_cursor: cfg.record_show_cursor,
             record_bitrate_mbps: cfg.record_bitrate_mbps,
+            record_auto_reencode: cfg.record_auto_reencode,
+            record_reencode_replace_original: cfg.record_reencode_replace_original,
+            record_reencode_encoder: cfg.record_reencode_encoder.min(3),
+            record_reencode_quality: cfg.record_reencode_quality.clamp(
+                video::reencode_quality_range(cfg.record_reencode_encoder.min(3)).0,
+                51,
+            ),
+            reencode_details_open: false,
+            reencode_encoder_open: false,
             bitrate_dropdown_open: false,
             record_max_width: cfg.record_max_width,
             record_max_height: cfg.record_max_height,
@@ -1342,6 +1385,10 @@ impl Settings {
                         self.begin_max_resolution_press(dim, cx);
                         return None;
                     }
+                    Some(Btn::ReencodeQualityField) => {
+                        self.begin_max_resolution_press(MaxResDim::ReencodeQuality, cx);
+                        return None;
+                    }
                     Some(Btn::SaveDirField(k)) => {
                         self.begin_save_dir_press(k, cx);
                         return None;
@@ -1398,7 +1445,7 @@ impl Settings {
             self.commit_filename_format();
         }
         // Commit the max-resolution field's input when anything else is clicked.
-        if !matches!(btn, Btn::MaxResolutionField(_)) {
+        if !matches!(btn, Btn::MaxResolutionField(_) | Btn::ReencodeQualityField) {
             self.commit_max_resolution();
         }
         // Commit a save-dir field's input when anything else is clicked.
@@ -1445,7 +1492,7 @@ impl Settings {
             Btn::SessionLimitField | Btn::SessionLimitStep(_) | Btn::BrowseEditor => {
                 self.activate_editor(btn)
             }
-            Btn::FilenameFormatField | Btn::LaunchAtStartup => self.activate_general(btn),
+            Btn::FilenameFormatField | Btn::LaunchAtStartup | Btn::OpenExplorerAfterScreenshot => self.activate_general(btn),
             Btn::MaxResolutionField(_)
             | Btn::BitrateDropdown
             | Btn::BitrateOption(_)
@@ -1456,6 +1503,13 @@ impl Settings {
             | Btn::SampleRateDropdown
             | Btn::SampleRateOption(_)
             | Btn::StripSilentAudio
+            | Btn::AutoReencode
+            | Btn::ReencodeDetails
+            | Btn::ReencodeReplaceOriginal
+            | Btn::ReencodeEncoder
+            | Btn::ReencodeEncoderOption(_)
+            | Btn::ReencodeQualityField
+            | Btn::CloseReencodeDetails
             | Btn::ShowCursorInRecording
             | Btn::ShowClickRipple
             | Btn::LeftClickColorSwatch
@@ -1487,9 +1541,14 @@ impl Settings {
                 save_dir_mp4: self.save_dir_mp4.clone(),
                 save_dir_gif: self.save_dir_gif.clone(),
                 launch_at_startup: self.launch_at_startup,
+                open_explorer_after_screenshot: self.open_explorer_after_screenshot,
                 external_editor: self.external_editor.clone(),
                 record_show_cursor: self.record_show_cursor,
                 record_bitrate_mbps: self.record_bitrate_mbps,
+                record_auto_reencode: self.record_auto_reencode,
+                record_reencode_replace_original: self.record_reencode_replace_original,
+                record_reencode_encoder: self.record_reencode_encoder,
+                record_reencode_quality: self.record_reencode_quality,
                 record_max_width: self.record_max_width,
                 record_max_height: self.record_max_height,
                 record_show_click_ripple: self.record_show_click_ripple,
@@ -1547,6 +1606,7 @@ impl Settings {
         let save_dir_cursor = self.save_dir_cursor;
         let external_editor = self.external_editor.clone();
         let launch_at_startup = self.launch_at_startup;
+        let open_explorer_after_screenshot = self.open_explorer_after_screenshot;
         let record_show_cursor = self.record_show_cursor;
         let record_show_click_ripple = self.record_show_click_ripple;
         let record_click_color_left = self.record_click_color_left;
@@ -1584,6 +1644,12 @@ impl Settings {
         let filename_format_cursor = self.filename_format_cursor;
         let record_bitrate_mbps = self.record_bitrate_mbps;
         let bitrate_dropdown_open = self.bitrate_dropdown_open;
+        let record_auto_reencode = self.record_auto_reencode;
+        let record_reencode_replace_original = self.record_reencode_replace_original;
+        let record_reencode_encoder = self.record_reencode_encoder;
+        let record_reencode_quality = self.record_reencode_quality;
+        let reencode_details_open = self.reencode_details_open;
+        let reencode_encoder_open = self.reencode_encoder_open;
         let record_max_width = self.record_max_width;
         let record_max_height = self.record_max_height;
         let max_resolution_focus = self.max_resolution_focus;
@@ -1741,6 +1807,7 @@ impl Settings {
                     &self.ime_preedit,
                     self.ime_preedit_cursor,
                     launch_at_startup,
+                    open_explorer_after_screenshot,
                 ),
                 Tab::Capture => capture_tab::draw_capture(
                     &mut canvas,
@@ -1775,6 +1842,12 @@ impl Settings {
                     picker_target,
                     record_bitrate_mbps,
                     bitrate_dropdown_open,
+                    record_auto_reencode,
+                    record_reencode_replace_original,
+                    record_reencode_encoder,
+                    record_reencode_quality,
+                    reencode_details_open,
+                    reencode_encoder_open,
                     record_max_width,
                     record_max_height,
                     max_resolution_focus,
@@ -1855,10 +1928,23 @@ impl Settings {
             // Buttons (tabs, checkboxes, token fields, and Hotkeys rows are
             // drawn individually above, so excluded here).
             for (btn, rect) in &buttons {
+                if tab == Tab::Video && reencode_details_open {
+                    let panel = video::reencode_panel_rect_for_draw(sw);
+                    if rect.x0 < panel.x1 && panel.x0 < rect.x1 && rect.y0 < panel.y1 && panel.y0 < rect.y1 {
+                        continue;
+                    }
+                }
                 if matches!(
                     btn,
                     Btn::Tab(_)
                         | Btn::LaunchAtStartup
+                        | Btn::AutoReencode
+                        | Btn::ReencodeDetails
+                        | Btn::ReencodeReplaceOriginal
+            | Btn::ReencodeEncoder
+            | Btn::ReencodeEncoderOption(_)
+            | Btn::ReencodeQualityField
+                        | Btn::CloseReencodeDetails
                         | Btn::ShowCursorInRecording
                         | Btn::ShowClickRipple
                         | Btn::LeftClickColorSwatch
@@ -1890,6 +1976,7 @@ impl Settings {
                         | Btn::ToggleUploaderEnabled(_)
                         | Btn::UploadField(_)
                         | Btn::FilenameFormatField
+                        | Btn::OpenExplorerAfterScreenshot
                         | Btn::MaxResolutionField(_)
                         | Btn::SaveDirField(_)
                 ) {
@@ -1910,6 +1997,14 @@ impl Settings {
                     Btn::Cancel => "Cancel",
                     Btn::Tab(_)
                     | Btn::LaunchAtStartup
+                    | Btn::AutoReencode
+                    | Btn::ReencodeDetails
+                    | Btn::ReencodeReplaceOriginal
+            | Btn::ReencodeEncoder
+            | Btn::ReencodeEncoderOption(_)
+            | Btn::ReencodeQualityField
+                    | Btn::CloseReencodeDetails
+                    | Btn::OpenExplorerAfterScreenshot
                     | Btn::ShowCursorInRecording
                     | Btn::ShowClickRipple
                     | Btn::LeftClickColorSwatch

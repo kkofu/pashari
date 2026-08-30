@@ -276,6 +276,10 @@ impl App {
                     external_editor,
                     record_show_cursor,
                     record_bitrate_mbps,
+                    record_auto_reencode,
+                    record_reencode_replace_original,
+                    record_reencode_encoder,
+                    record_reencode_quality,
                     record_max_width,
                     record_max_height,
                     record_show_click_ripple,
@@ -309,6 +313,7 @@ impl App {
                     hotkey_editor_tool_number_marker,
                     session_history_limit,
                     launch_at_startup,
+                    open_explorer_after_screenshot,
                     filename_format,
                 } = *saved;
                 let hotkeys_cfg = HotkeyConfig {
@@ -344,6 +349,10 @@ impl App {
                     external_editor,
                     record_show_cursor,
                     record_bitrate_mbps,
+                    record_auto_reencode,
+                    record_reencode_replace_original,
+                    record_reencode_encoder,
+                    record_reencode_quality,
                     record_max_width,
                     record_max_height,
                     record_show_click_ripple,
@@ -355,6 +364,7 @@ impl App {
                     record_strip_silent_audio,
                     session_history_limit,
                     launch_at_startup,
+                    open_explorer_after_screenshot,
                     filename_format,
                     ..store::snapshot()
                 };
@@ -578,7 +588,9 @@ fn handle_outcome(outcome: Option<Outcome>) {
             Action::Save => match export::save_png(&shot) {
                 Ok(p) => {
                     println!("saved: {}", p.display());
-                    spawn_reveal(p);
+                    if store::snapshot().open_explorer_after_screenshot {
+                        spawn_reveal(p);
+                    }
                 }
                 Err(e) => eprintln!("保存に失敗: {e}"),
             },
@@ -600,7 +612,9 @@ fn handle_outcome(outcome: Option<Outcome>) {
         },
         Some(Outcome::Recorded(path)) => {
             println!("saved: {}", path.display());
-            spawn_reveal(path);
+            if store::snapshot().open_explorer_after_screenshot {
+                spawn_reveal(path);
+            }
         }
         Some(Outcome::Saved(path)) => {
             println!("saved: {}", path.display());

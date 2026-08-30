@@ -669,6 +669,36 @@ impl Overlay {
         crate::store::set_and_save(cfg);
     }
 
+    fn toggle_desktop_audio(&mut self) {
+        self.desktop_audio = !self.desktop_audio;
+        if let Some(rec) = self.recorder.as_mut() {
+            rec.set_desktop_audio(self.desktop_audio);
+        }
+        if let Some((session, _)) = self.preview_audio.as_mut() {
+            let cfg = crate::store::snapshot();
+            session.set_desktop(self.desktop_audio, &cfg.record_audio_output_device);
+        }
+        self.save_record_prefs();
+        if let Some(w) = self.control_window.as_ref() {
+            w.request_redraw();
+        }
+    }
+
+    fn toggle_mic(&mut self) {
+        self.mic = !self.mic;
+        if let Some(rec) = self.recorder.as_mut() {
+            rec.set_mic(self.mic);
+        }
+        if let Some((session, _)) = self.preview_audio.as_mut() {
+            let cfg = crate::store::snapshot();
+            session.set_mic(self.mic, &cfg.record_audio_input_device);
+        }
+        self.save_record_prefs();
+        if let Some(w) = self.control_window.as_ref() {
+            w.request_redraw();
+        }
+    }
+
     /// The current view (zoom level + cursor center).
     fn view(&self) -> View {
         View {
@@ -1202,6 +1232,13 @@ impl Overlay {
             x1: sw,
             y1: sh,
         };
+        let dpi = containing_monitor_index(&self.frozen.monitors, r)
+            .and_then(|i| self.frozen.monitor_dpis.get(i))
+            .copied()
+            .unwrap_or(1.0);
+        let control_w = ((CONTROL_W as f64) * dpi).round() as usize;
+        let control_h = ((CONTROL_H as f64) * dpi).round() as usize;
+        let margin = ((12.0 * dpi).round() as usize).max(1);
         // Clamping against the whole composited canvas could place the
         // control bar in a blind spot belonging to no monitor with
         // mismatched monitor heights/layouts, so clamp within the
@@ -1210,13 +1247,13 @@ impl Overlay {
         // Below the region, else above, else clamped (still local coordinates here).
         let x =
             r.x0.max(bounds.x0)
-                .min(bounds.x1.saturating_sub(CONTROL_W).max(bounds.x0));
-        let y = if r.y1 + 12 + CONTROL_H <= bounds.y1 {
-            r.y1 + 12
-        } else if r.y0 >= bounds.y0 + CONTROL_H + 12 {
-            r.y0 - CONTROL_H - 12
+                .min(bounds.x1.saturating_sub(control_w).max(bounds.x0));
+        let y = if r.y1 + margin + control_h <= bounds.y1 {
+            r.y1 + margin
+        } else if r.y0 >= bounds.y0 + control_h + margin {
+            r.y0 - control_h - margin
         } else {
-            bounds.y1.saturating_sub(CONTROL_H).max(bounds.y0)
+            bounds.y1.saturating_sub(control_h).max(bounds.y0)
         };
         // The control bar is a separate top-level window, so convert to screen absolute coordinates.
         let (ox, oy) = self.frozen.origin;
@@ -1335,6 +1372,22 @@ impl Overlay {
             eprintln!("録画停止に失敗: {e}");
         }
         if let Some(path) = self.record_path.take() {
+            let cfg = crate::store::snapshot();
+            if cfg.record_auto_reencode
+                && path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("mp4"))
+            {
+                let reencode_path = path.clone();
+                std::thread::spawn(move || {
+                    if let Err(e) = capture::reencode_mp4(
+                        &reencode_path,
+                        cfg.record_reencode_encoder,
+                        cfg.record_reencode_quality,
+                        cfg.record_reencode_replace_original,
+                    ) {
+                        eprintln!("録画の自動圧縮に失敗: {e}");
+                    }
+                });
+            }
             self.outcome = Some(Outcome::Recorded(path));
         }
         self.finish();
@@ -1525,6 +1578,34 @@ impl Overlay {
             return;
         }
 
+        if let WindowEvent::KeyboardInput {
+            event,
+            is_synthetic,
+            ..
+        } = &event
+        {
+            if !is_synthetic && event.state == ElementState::Pressed {
+                if let Key::Character(s) = &event.logical_key
+                    && let Some(ch) = s.chars().next()
+                {
+                    match ch.to_ascii_lowercase() {
+                        's' => match self.mode {
+                            Mode::Recording => self.stop_recording(event_loop),
+                            _ => self.begin_recording(event_loop),
+                        },
+                        'd' if matches!(self.record_format, capture::RecordFormat::Mp4) => {
+                            self.toggle_desktop_audio();
+                        }
+                        'm' if matches!(self.record_format, capture::RecordFormat::Mp4) => {
+                            self.toggle_mic();
+                        }
+                        'q' => self.cancel_or_stop(event_loop),
+                        _ => {}
+                    }
+                }
+            }
+        }
+
         if self.control_window.as_ref().is_some_and(|w| w.id() == id) {
             self.control_event(event_loop, event);
         } else if let Some(sw) = self.border.iter_mut().find(|s| s.window.id() == id) {
@@ -1591,37 +1672,12 @@ impl Overlay {
                         Some(CtrlBtn::Desktop)
                             if matches!(self.record_format, capture::RecordFormat::Mp4) =>
                         {
-                            self.desktop_audio = !self.desktop_audio;
-                            if let Some(rec) = self.recorder.as_mut() {
-                                rec.set_desktop_audio(self.desktop_audio);
-                            }
-                            if let Some((session, _)) = self.preview_audio.as_mut() {
-                                let cfg = crate::store::snapshot();
-                                session.set_desktop(
-                                    self.desktop_audio,
-                                    &cfg.record_audio_output_device,
-                                );
-                            }
-                            self.save_record_prefs();
-                            if let Some(w) = self.control_window.as_ref() {
-                                w.request_redraw();
-                            }
+                            self.toggle_desktop_audio();
                         }
                         Some(CtrlBtn::Mic)
                             if matches!(self.record_format, capture::RecordFormat::Mp4) =>
                         {
-                            self.mic = !self.mic;
-                            if let Some(rec) = self.recorder.as_mut() {
-                                rec.set_mic(self.mic);
-                            }
-                            if let Some((session, _)) = self.preview_audio.as_mut() {
-                                let cfg = crate::store::snapshot();
-                                session.set_mic(self.mic, &cfg.record_audio_input_device);
-                            }
-                            self.save_record_prefs();
-                            if let Some(w) = self.control_window.as_ref() {
-                                w.request_redraw();
-                            }
+                            self.toggle_mic();
                         }
                         Some(CtrlBtn::Quit) => self.cancel_or_stop(event_loop),
                         _ => {}

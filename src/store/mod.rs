@@ -40,6 +40,11 @@ pub struct Config {
     pub record_show_cursor: bool,
     /// mp4 recording bitrate (Mbps).
     pub record_bitrate_mbps: u32,
+    /// Whether to re-encode completed MP4 recordings with ffmpeg.
+    pub record_auto_reencode: bool,
+    pub record_reencode_replace_original: bool,
+    pub record_reencode_encoder: u8,
+    pub record_reencode_quality: u32,
     /// Max recording width (px); scaled down preserving aspect ratio if
     /// exceeded. 0 disables it (no limit, recorded at the selection's actual size).
     pub record_max_width: u32,
@@ -71,6 +76,8 @@ pub struct Config {
     /// The external editor's executable path. Used for Shift+E during
     /// region selection when set (E always opens the bundled Editor).
     pub external_editor: String,
+    /// Whether to open Explorer after saving a screenshot.
+    pub open_explorer_after_screenshot: bool,
 
     /// Max number of Editor session history entries kept in the Recent tab.
     pub session_history_limit: usize,
@@ -102,6 +109,10 @@ impl Default for Config {
             record_mic: false,
             record_show_cursor: true,
             record_bitrate_mbps: 15,
+            record_auto_reencode: false,
+            record_reencode_replace_original: false,
+            record_reencode_encoder: 3,
+            record_reencode_quality: 26,
             record_max_width: 0,
             record_max_height: 0,
             record_show_click_ripple: false,
@@ -114,6 +125,7 @@ impl Default for Config {
             record_fps_presets: vec![15, 24, 30, 60],
             record_fps: 30,
             external_editor: String::new(),
+            open_explorer_after_screenshot: true,
             session_history_limit: 10,
             last_update_check: 0,
             launch_at_startup: false,
@@ -275,6 +287,11 @@ record_mic = {}
 record_show_cursor = {}
 # mp4 録画のビットレート（Mbps）。
 record_bitrate_mbps = {}
+# 録画完了後、ffmpeg で再エンコードして元ファイルを置き換えるかどうか。
+record_auto_reencode = {}
+record_reencode_replace_original = {}
+record_reencode_encoder = {}
+record_reencode_quality = {}
 # 録画の幅/高さの上限（px）。それぞれ 0 なら無効（無制限）。
 record_max_width = {}
 record_max_height = {}
@@ -304,6 +321,9 @@ record_fps = {}
 # （通常の Edit / E キーは常に同梱の Editor を開きます）。
 external_editor = '{}'
 
+# スクリーンショット保存後にエクスプローラーを開くかどうか。
+open_explorer_after_screenshot = {}
+
 # 設定GUIの Recent タブに保持する Editor セッション履歴の最大件数。
 session_history_limit = {}
 # 最後にアップデート確認をした時刻（UNIX秒。自動的に更新されます。手編集不要）。
@@ -321,6 +341,10 @@ launch_at_startup = {}
         c.record_mic,
         c.record_show_cursor,
         c.record_bitrate_mbps,
+        c.record_auto_reencode,
+        c.record_reencode_replace_original,
+        c.record_reencode_encoder,
+        c.record_reencode_quality,
         c.record_max_width,
         c.record_max_height,
         c.record_show_click_ripple,
@@ -337,6 +361,7 @@ launch_at_startup = {}
             .join(", "),
         c.record_fps,
         c.external_editor,
+        c.open_explorer_after_screenshot,
         c.session_history_limit,
         c.last_update_check,
         c.launch_at_startup,

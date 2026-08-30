@@ -22,7 +22,11 @@ mod mic;
 mod mixer;
 mod mp4_strip;
 
+use std::fs;
 use std::path::Path;
+use std::process::Command;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
@@ -63,6 +67,62 @@ pub fn audio_input_device_names() -> Vec<String> {
 pub enum RecordFormat {
     Mp4,
     Gif,
+}
+
+/// Re-encodes an MP4 with the selected encoder. The original is replaced only
+/// when requested and only after the new file has been written successfully.
+pub fn reencode_mp4(path: &Path, encoder_id: u8, quality: u32, replace: bool) -> Result<(), String> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "録画ファイル名を取得できません".to_string())?;
+    let output = if replace {
+        path.with_file_name(format!(".{file_name}.reencoded.mp4"))
+    } else {
+        path.with_file_name(format!("{file_name}.reencoded.mp4"))
+    };
+    let temp = output.with_file_name(format!(".{}", output.file_name().unwrap().to_string_lossy()));
+    let backup = path.with_file_name(format!(".{file_name}.original.mp4"));
+    if backup.exists() {
+        return Err("前回の元動画退避ファイルが残っているため実行できません".to_string());
+    }
+    let _ = fs::remove_file(&temp);
+
+    let (encoder, options): (&str, Vec<String>) = match encoder_id.min(3) {
+        0 => ("hevc_nvenc", vec!["-preset", "p4", "-rc", "vbr", "-cq", &quality.to_string(), "-b:v", "0"].into_iter().map(str::to_string).collect()),
+        1 => ("hevc_qsv", vec!["-preset", "medium", "-global_quality", &quality.to_string()].into_iter().map(str::to_string).collect()),
+        2 => ("hevc_amf", vec!["-quality", "quality", "-rc", "qvbr", "-qvbr_quality_level", &quality.to_string()].into_iter().map(str::to_string).collect()),
+        _ => ("libx265", vec!["-preset", "medium", "-crf", &quality.to_string()].into_iter().map(str::to_string).collect()),
+    };
+    let mut command = Command::new("ffmpeg");
+        #[cfg(windows)]
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        let status = command
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+            .arg(path)
+            .args(["-map", "0:v:0", "-map", "0:a?", "-c:v", encoder])
+            .args(options)
+            .args(["-pix_fmt", "yuv420p", "-c:a", "copy", "-map_metadata", "0"])
+            .arg(&temp)
+            .status()
+            .map_err(|e| format!("ffmpegを起動できません: {e}"))?;
+    if !status.success() {
+        let _ = fs::remove_file(&temp);
+        return Err(format!("{encoder} が終了コード {:?} を返しました", status.code()));
+    }
+
+    if !replace {
+        fs::rename(&temp, &output).map_err(|e| format!("再エンコード後動画の保存に失敗: {e}"))?;
+        return Ok(());
+    }
+
+    fs::rename(path, &backup).map_err(|e| format!("元動画の退避に失敗: {e}"))?;
+    if let Err(e) = fs::rename(&temp, path) {
+        let _ = fs::rename(&backup, path);
+        return Err(format!("圧縮後動画の置換に失敗: {e}"));
+    }
+    fs::remove_file(&backup).map_err(|e| format!("元動画の削除に失敗: {e}"))?;
+    Ok(())
 }
 
 /// A recording request (caller → Recorder). The region is absolute
