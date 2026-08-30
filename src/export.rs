@@ -175,7 +175,7 @@ fn substitute_counter_placeholders(
     sanitize_filename(&out)
 }
 
-/// Renders a template preview string with given date/time and sample counter values.
+/// Renders a filename template with supplied preview values.
 pub fn render_filename_preview(
     template: &str,
     now: chrono::DateTime<chrono::Local>,
@@ -341,5 +341,17 @@ mod tests {
         let (dated, tokens) = render_skeleton("shot_%Y_%n", sample_now());
         assert_eq!(dated, format!("shot_2026_{}", placeholder_char(0)));
         assert_eq!(tokens.len(), 1);
+    }
+
+    #[test]
+    fn render_filename_preview_expands_date_and_both_counter_kinds() {
+        let preview = render_filename_preview("shot_%Y-%m-%d_%04n_%#03n", sample_now(), 7, 12);
+        assert_eq!(preview, "shot_2026-07-21_0012_007");
+    }
+
+    #[test]
+    fn render_filename_preview_does_not_panic_on_invalid_date_specifier() {
+        let preview = render_filename_preview("shot_%Q_%n", sample_now(), 1, 2);
+        assert!(!preview.is_empty());
     }
 }

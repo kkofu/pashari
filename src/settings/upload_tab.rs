@@ -8,8 +8,8 @@ use winit::keyboard::{Key, NamedKey};
 use super::{
     ACCENT, Btn, CONTENT_X, SCROLLBAR_THUMB, SCROLLBAR_THUMB_HOVER, Settings, SettingsResult,
     TextCursor, UPLOAD_FIELDS, UploadField, apply_common_edit_key, byte_index_for_char_count,
-    char_index_for_x, field, hover_tint_for, scrollbar_thumb_rect, stroke_top_bottom_aware,
-    theme_colors, x_for_char_index,
+    char_index_for_x, field, hover_tint_for, preedit_caret_index, scrollbar_thumb_rect,
+    stroke_top_bottom_aware, theme_colors, with_preedit, x_for_char_index,
 };
 use crate::store::UploaderProfile;
 use crate::ui::text::TextRenderer;
@@ -281,6 +281,7 @@ impl Settings {
                 self.upload_field_focus = None;
                 self.upload_field_buf.clear();
                 self.upload_field_cursor = TextCursor::default();
+                self.set_text_ime_allowed(false);
                 self.request_redraw();
             }
             Key::Character(s) if self.mods.control_key() && s.eq_ignore_ascii_case("c") => {
@@ -335,6 +336,7 @@ impl Settings {
         self.upload_field_cursor = TextCursor::at_end(&value);
         self.upload_field_buf = value;
         self.upload_field_focus = Some(field);
+        self.set_text_ime_allowed(true);
         self.request_redraw();
     }
 
@@ -382,6 +384,7 @@ impl Settings {
             *upload_field_value_mut(p, field) = value;
         }
         self.upload_field_cursor = TextCursor::default();
+        self.set_text_ime_allowed(false);
         self.request_redraw();
     }
 }
@@ -399,6 +402,8 @@ pub(super) fn draw_upload(
     upload_field_focus: Option<UploadField>,
     upload_field_buf: &str,
     upload_field_cursor: TextCursor,
+    ime_preedit: &str,
+    ime_preedit_cursor: Option<(usize, usize)>,
     text: Option<&TextRenderer>,
     scrollbar_active: bool,
 ) {
@@ -544,10 +549,14 @@ pub(super) fn draw_upload(
             canvas.fill(rect, FIELD_BG);
             let focused = upload_field_focus == Some(f);
             canvas.stroke(rect, if focused { ACCENT } else { 0x0080_8080 });
-            let shown = if focused {
-                upload_field_buf.to_string()
+            let (shown, preedit_range) = if focused && !ime_preedit.is_empty() {
+                let (display, range) =
+                    with_preedit(upload_field_buf, upload_field_cursor, ime_preedit);
+                (display, Some(range))
+            } else if focused {
+                (upload_field_buf.to_string(), None)
             } else {
-                upload_field_value(profile, f).to_string()
+                (upload_field_value(profile, f).to_string(), None)
             };
             // Token is masked with `*` for display only; the caret is
             // mapped through the char count of the masked string.
@@ -571,7 +580,10 @@ pub(super) fn draw_upload(
             let (ascent, descent) = t.glyph_vextent(15.0);
             let caret_y0 = (value_baseline - ascent) as usize;
             let caret_y1 = (value_baseline - descent) as usize;
-            if focused && let Some((lo, hi)) = upload_field_cursor.selection() {
+            if focused
+                && ime_preedit.is_empty()
+                && let Some((lo, hi)) = upload_field_cursor.selection()
+            {
                 let x0 = text_x0 + x_for_char_index(Some(t), &display, 15.0, display_idx(lo));
                 let x1 = text_x0 + x_for_char_index(Some(t), &display, 15.0, display_idx(hi));
                 canvas.fill(
@@ -594,22 +606,40 @@ pub(super) fn draw_upload(
                 rect,
             );
             if focused {
-                let cx = (text_x0
-                    + x_for_char_index(
-                        Some(t),
-                        &display,
-                        15.0,
-                        display_idx(upload_field_cursor.cursor),
-                    )) as usize;
-                canvas.fill(
-                    Rect {
-                        x0: cx,
-                        y0: caret_y0,
-                        x1: cx + 1,
-                        y1: caret_y1,
-                    },
-                    TEXT,
+                let caret_idx = preedit_range.as_ref().map_or_else(
+                    || Some(upload_field_cursor.cursor),
+                    |range| preedit_caret_index(range.start, ime_preedit, ime_preedit_cursor),
                 );
+                if let Some(range) = preedit_range.as_ref() {
+                    let x0 = text_x0
+                        + x_for_char_index(Some(t), &display, 15.0, display_idx(range.start));
+                    let x1 =
+                        text_x0 + x_for_char_index(Some(t), &display, 15.0, display_idx(range.end));
+                    let underline_y = caret_y1.min(rect.y1.saturating_sub(2));
+                    canvas.fill(
+                        Rect {
+                            x0: x0 as usize,
+                            y0: underline_y,
+                            x1: x1 as usize,
+                            y1: underline_y + 1,
+                        },
+                        ACCENT,
+                    );
+                }
+                if let Some(caret_idx) = caret_idx {
+                    let cx = (text_x0
+                        + x_for_char_index(Some(t), &display, 15.0, display_idx(caret_idx)))
+                        as usize;
+                    canvas.fill(
+                        Rect {
+                            x0: cx,
+                            y0: caret_y0,
+                            x1: cx + 1,
+                            y1: caret_y1,
+                        },
+                        TEXT,
+                    );
+                }
             }
         }
     }
