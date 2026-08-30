@@ -256,6 +256,15 @@ fn containing_monitor(monitors: &[Rect], sel: Rect, canvas: Rect) -> Rect {
         .unwrap_or(canvas)
 }
 
+/// Returns the monitor containing a source-coordinate point.
+fn monitor_at(monitors: &[Rect], point: (f64, f64)) -> Option<Rect> {
+    let (x, y) = (point.0.floor() as usize, point.1.floor() as usize);
+    monitors
+        .iter()
+        .find(|m| x >= m.x0 && x < m.x1 && y >= m.y0 && y < m.y1)
+        .copied()
+}
+
 /// One monitor as reported by the windowing system: absolute position and
 /// size (both physical pixels) plus its own DPI scale factor.
 type MonitorInfo = ((i32, i32), (u32, u32), f64);
@@ -753,6 +762,15 @@ impl Overlay {
             && self.selection.is_none()
             && self.snap_rect.is_some()
             && (!self.dragging || self.drag_moved() < SNAP_CLICK_TOL)
+    }
+
+    /// Uses a window/child candidate when available; on the desktop, selects
+    /// the whole monitor under the cursor by default.
+    fn snap_rect_at_cursor(&self) -> Option<Rect> {
+        self.snapshot
+            .as_ref()
+            .and_then(|s| s.element_at(self.cursor_src))
+            .or_else(|| monitor_at(&self.frozen.monitors, self.cursor_src))
     }
 
     /// Clamps the real cursor position to a pixel index in surface
@@ -2724,10 +2742,7 @@ impl Overlay {
                 // auto-select candidate under the cursor the same way
                 // `CursorMoved` does at 1x — this used to be missing
                 // here, breaking auto-select while zoomed.
-                self.snap_rect = self
-                    .snapshot
-                    .as_ref()
-                    .and_then(|s| s.element_at(self.cursor_src));
+                self.snap_rect = self.snap_rect_at_cursor();
             }
             self.warp_to_center();
             self.request_redraw();
@@ -3042,10 +3057,7 @@ impl Overlay {
                     // Before selecting: updates the snap candidate under
                     // the cursor. The real cursor stays hidden at all
                     // times; the custom crosshair shows the position regardless of a candidate.
-                    self.snap_rect = self
-                        .snapshot
-                        .as_ref()
-                        .and_then(|s| s.element_at(self.cursor_src));
+                    self.snap_rect = self.snap_rect_at_cursor();
                     self.request_redraw();
                 }
             }
@@ -3152,6 +3164,16 @@ mod tests {
             containing_monitor(&monitors, sel_in_primary, canvas),
             primary
         );
+    }
+
+    #[test]
+    fn monitor_at_returns_monitor_under_cursor() {
+        let monitors = [
+            Rect { x0: 0, y0: 0, x1: 100, y1: 100 },
+            Rect { x0: 100, y0: 20, x1: 200, y1: 80 },
+        ];
+        assert_eq!(monitor_at(&monitors, (150.5, 40.0)), Some(monitors[1]));
+        assert_eq!(monitor_at(&monitors, (150.5, 10.0)), None);
     }
 
     #[test]
