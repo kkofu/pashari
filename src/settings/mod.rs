@@ -37,7 +37,7 @@ mod video;
 use std::num::NonZeroU32;
 use std::rc::Rc;
 
-use winit::dpi::{LogicalSize, PhysicalPosition};
+use winit::dpi::{LogicalPosition, LogicalSize, PhysicalPosition};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::keyboard::{ModifiersState, NamedKey, PhysicalKey};
@@ -53,7 +53,7 @@ use about::UpdateCheckStatus;
 use hotkeys_tab::{HOTKEY_ROWS, LocalAction, build_hotkey, hotkey_content_height, hotkey_viewport};
 use text_field::{
     TextCursor, apply_common_edit_key, byte_index_for_char_count, char_index_for_x,
-    x_for_char_index,
+    preedit_caret_index, with_preedit, x_for_char_index,
 };
 use video::{ClickColorTarget, MaxResDim, click_color_picker_geom};
 
@@ -507,6 +507,11 @@ pub struct Settings {
     /// Caret/selection state for the focused filename template field.
     filename_format_cursor: TextCursor,
 
+    /// In-progress IME composition text (preedit).
+    ime_preedit: String,
+    /// Byte-wise cursor range within `ime_preedit`; `None` hides its caret.
+    ime_preedit_cursor: Option<(usize, usize)>,
+
     hover: Option<Btn>,
     pressed: Option<Btn>,
     text: Option<TextRenderer>,
@@ -578,6 +583,7 @@ impl Settings {
                 .create_window(attrs)
                 .expect("設定ウィンドウ生成に失敗"),
         );
+        window.set_ime_allowed(false);
 
         let context = softbuffer::Context::new(window.clone()).expect("settings context");
         let mut surface =
@@ -686,6 +692,8 @@ impl Settings {
             filename_format_focus: false,
             filename_format_buf: String::new(),
             filename_format_cursor: TextCursor::default(),
+            ime_preedit: String::new(),
+            ime_preedit_cursor: None,
             hover: None,
             pressed: None,
             text: TextRenderer::load(),
@@ -710,6 +718,21 @@ impl Settings {
         }
     }
 
+    /// Enables IME only for text fields that render composition inline.
+    pub(super) fn set_text_ime_allowed(&mut self, allowed: bool) {
+        self.ime_preedit.clear();
+        self.ime_preedit_cursor = None;
+        if let Some(window) = self.window.as_ref() {
+            window.set_ime_allowed(allowed);
+        }
+    }
+
+    fn ime_text_field_focused(&self) -> bool {
+        self.filename_format_focus
+            || self.upload_field_focus.is_some()
+            || self.save_dir_focus.is_some()
+    }
+
     fn save_dir_mut(&mut self, k: SaveKind) -> &mut String {
         match k {
             SaveKind::Png => &mut self.save_dir_png,
@@ -720,9 +743,12 @@ impl Settings {
 
     /// Focus the save-dir field for `k` and load its current value into the buffer.
     fn focus_save_dir(&mut self, k: SaveKind) {
+        self.commit_max_resolution();
+        self.commit_save_dir();
         self.save_dir_buf = self.save_dir_mut(k).clone();
         self.save_dir_cursor = TextCursor::at_end(&self.save_dir_buf);
         self.save_dir_focus = Some(k);
+        self.set_text_ime_allowed(true);
         self.request_redraw();
     }
 
@@ -758,6 +784,7 @@ impl Settings {
         *self.save_dir_mut(k) = self.save_dir_buf.trim().to_string();
         self.save_dir_buf.clear();
         self.save_dir_cursor = TextCursor::default();
+        self.set_text_ime_allowed(false);
         self.request_redraw();
     }
 
@@ -786,6 +813,7 @@ impl Settings {
                 self.save_dir_focus = None;
                 self.save_dir_buf.clear();
                 self.save_dir_cursor = TextCursor::default();
+                self.set_text_ime_allowed(false);
                 self.request_redraw();
             }
             winit::keyboard::Key::Character(s)
@@ -928,6 +956,40 @@ impl Settings {
             }
 
             WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
+
+            WindowEvent::Ime(winit::event::Ime::Preedit(text, cursor)) => {
+                if self.ime_text_field_focused() {
+                    self.ime_preedit = text;
+                    self.ime_preedit_cursor = cursor;
+                    self.request_redraw();
+                }
+            }
+
+            WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
+                self.ime_preedit.clear();
+                self.ime_preedit_cursor = None;
+                if self.filename_format_focus {
+                    self.filename_format_cursor
+                        .insert(&mut self.filename_format_buf, &text);
+                    self.request_redraw();
+                } else if self.upload_field_focus.is_some() {
+                    self.upload_field_cursor
+                        .insert(&mut self.upload_field_buf, &text);
+                    self.request_redraw();
+                } else if self.save_dir_focus.is_some() {
+                    self.save_dir_cursor.insert(&mut self.save_dir_buf, &text);
+                    self.request_redraw();
+                }
+            }
+
+            WindowEvent::Ime(winit::event::Ime::Disabled) => {
+                if !self.ime_preedit.is_empty() || self.ime_preedit_cursor.is_some() {
+                    self.ime_preedit.clear();
+                    self.ime_preedit_cursor = None;
+                    self.request_redraw();
+                }
+            }
+            WindowEvent::Ime(winit::event::Ime::Enabled) => {}
 
             WindowEvent::KeyboardInput { event, .. } => {
                 if event.state == ElementState::Pressed {
@@ -1676,6 +1738,8 @@ impl Settings {
                     filename_format_focus,
                     &filename_format_buf,
                     filename_format_cursor,
+                    &self.ime_preedit,
+                    self.ime_preedit_cursor,
                     launch_at_startup,
                 ),
                 Tab::Capture => capture_tab::draw_capture(
@@ -1687,6 +1751,8 @@ impl Settings {
                     save_dir_focus,
                     &save_dir_buf,
                     save_dir_cursor,
+                    &self.ime_preedit,
+                    self.ime_preedit_cursor,
                 ),
                 Tab::Video => video::draw_video(
                     &mut canvas,
@@ -1700,6 +1766,8 @@ impl Settings {
                     save_dir_focus,
                     &save_dir_buf,
                     save_dir_cursor,
+                    &self.ime_preedit,
+                    self.ime_preedit_cursor,
                     record_show_cursor,
                     record_show_click_ripple,
                     record_click_color_left,
@@ -1747,6 +1815,8 @@ impl Settings {
                     upload_field_focus,
                     &upload_field_buf,
                     upload_field_cursor,
+                    &self.ime_preedit,
+                    self.ime_preedit_cursor,
                     text,
                     scrollbar_active,
                 ),
@@ -1901,6 +1971,127 @@ impl Settings {
         }
 
         let _ = buf.present();
+
+        if let Some(w) = self.window.as_ref() {
+            let (ascent, descent) = t.glyph_vextent(15.0);
+            let ime_rect = if self.filename_format_focus {
+                let format_rect = general::filename_format_row_layout(sw);
+                let baseline =
+                    t.baseline_for_center((format_rect.y0 + format_rect.y1) as f32 / 2.0, 15.0);
+                let text_x0 = format_rect.x0 as f32 + 8.0;
+                let (display, caret_idx) = if !self.ime_preedit.is_empty() {
+                    let (display, range) = with_preedit(
+                        &self.filename_format_buf,
+                        self.filename_format_cursor,
+                        &self.ime_preedit,
+                    );
+                    let caret_idx = preedit_caret_index(
+                        range.start,
+                        &self.ime_preedit,
+                        self.ime_preedit_cursor,
+                    )
+                    .unwrap_or(range.end);
+                    (display, caret_idx)
+                } else {
+                    (
+                        self.filename_format_buf.clone(),
+                        self.filename_format_cursor.cursor,
+                    )
+                };
+                let cx = (text_x0 + x_for_char_index(Some(t), &display, 15.0, caret_idx)) as usize;
+                let y0 = (baseline - ascent) as usize;
+                let y1 = (baseline - descent) as usize;
+                Some(Rect {
+                    x0: cx,
+                    y0,
+                    x1: cx + 1,
+                    y1,
+                })
+            } else if let Some(field) = self.upload_field_focus {
+                let i = UPLOAD_FIELDS.iter().position(|&f| f == field).unwrap_or(0);
+                let rect = upload_tab::upload_field_row_rect(i, sw, Some(t));
+                let baseline = t.baseline_for_center((rect.y0 + rect.y1) as f32 / 2.0, 15.0);
+                let text_x0 = rect.x0 as f32 + 8.0;
+                let (shown, caret_idx) = if !self.ime_preedit.is_empty() {
+                    let (display, range) = with_preedit(
+                        &self.upload_field_buf,
+                        self.upload_field_cursor,
+                        &self.ime_preedit,
+                    );
+                    let caret_idx = preedit_caret_index(
+                        range.start,
+                        &self.ime_preedit,
+                        self.ime_preedit_cursor,
+                    )
+                    .unwrap_or(range.end);
+                    (display, caret_idx)
+                } else {
+                    (
+                        self.upload_field_buf.clone(),
+                        self.upload_field_cursor.cursor,
+                    )
+                };
+                let (display, display_idx) = if field.is_secret() {
+                    (
+                        "*".repeat(shown.chars().count()),
+                        shown[..caret_idx].chars().count(),
+                    )
+                } else {
+                    (shown, caret_idx)
+                };
+                let cx =
+                    (text_x0 + x_for_char_index(Some(t), &display, 15.0, display_idx)) as usize;
+                let y0 = (baseline - ascent) as usize;
+                let y1 = (baseline - descent) as usize;
+                Some(Rect {
+                    x0: cx,
+                    y0,
+                    x1: cx + 1,
+                    y1,
+                })
+            } else if let Some(k) = self.save_dir_focus {
+                let y = match k {
+                    SaveKind::Png => 88,
+                    SaveKind::Mp4 => 88,
+                    SaveKind::Gif => next_row_y(88, 26),
+                };
+                let (path_rect, _) = save_row_layout(sw, y);
+                let baseline =
+                    t.baseline_for_center((path_rect.y0 + path_rect.y1) as f32 / 2.0, 15.0);
+                let text_x0 = path_rect.x0 as f32 + 8.0;
+                let (display, caret_idx) = if !self.ime_preedit.is_empty() {
+                    let (display, range) =
+                        with_preedit(&self.save_dir_buf, self.save_dir_cursor, &self.ime_preedit);
+                    let caret_idx = preedit_caret_index(
+                        range.start,
+                        &self.ime_preedit,
+                        self.ime_preedit_cursor,
+                    )
+                    .unwrap_or(range.end);
+                    (display, caret_idx)
+                } else {
+                    (self.save_dir_buf.clone(), self.save_dir_cursor.cursor)
+                };
+                let cx = (text_x0 + x_for_char_index(Some(t), &display, 15.0, caret_idx)) as usize;
+                let y0 = (baseline - ascent) as usize;
+                let y1 = (baseline - descent) as usize;
+                Some(Rect {
+                    x0: cx,
+                    y0,
+                    x1: cx + 1,
+                    y1,
+                })
+            } else {
+                None
+            };
+
+            if let Some(r) = ime_rect {
+                w.set_ime_cursor_area(
+                    LogicalPosition::new(r.x0 as f64, r.y0 as f64),
+                    LogicalSize::new(r.width().max(1) as f64, r.height().max(1) as f64),
+                );
+            }
+        }
     }
 }
 

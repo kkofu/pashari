@@ -1,8 +1,8 @@
 //! Capture tab: screenshot (PNG) save location.
 
 use super::{
-    ACCENT, Btn, CONTENT_X, SAVE_KINDS, SaveKind, Settings, TextCursor, save_row_layout,
-    theme_colors, x_for_char_index,
+    ACCENT, Btn, CONTENT_X, SAVE_KINDS, SaveKind, Settings, TextCursor, preedit_caret_index,
+    save_row_layout, theme_colors, with_preedit, x_for_char_index,
 };
 use crate::ui::text::TextRenderer;
 use crate::ui::{Canvas, Rect};
@@ -30,6 +30,8 @@ pub(super) fn draw_capture(
     save_dir_focus: Option<SaveKind>,
     save_dir_buf: &str,
     save_dir_cursor: TextCursor,
+    ime_preedit: &str,
+    ime_preedit_cursor: Option<(usize, usize)>,
 ) {
     let (
         BG,
@@ -55,12 +57,15 @@ pub(super) fn draw_capture(
     let save_dir = &save_dirs[0];
     canvas.fill(path_rect, FIELD_BG);
     canvas.stroke(path_rect, if focused { ACCENT } else { 0x0080_8080 });
-    let shown = if focused {
-        save_dir_buf.to_string()
+    let (shown, preedit_range) = if focused && !ime_preedit.is_empty() {
+        let (display, range) = with_preedit(save_dir_buf, save_dir_cursor, ime_preedit);
+        (display, Some(range))
+    } else if focused {
+        (save_dir_buf.to_string(), None)
     } else if save_dir.is_empty() {
-        "(default: Pictures/pashari)".to_string()
+        ("(default: Pictures/pashari)".to_string(), None)
     } else {
-        save_dir.clone()
+        (save_dir.clone(), None)
     };
     let path_color = if !focused && save_dir.is_empty() {
         DIM
@@ -72,7 +77,10 @@ pub(super) fn draw_capture(
     let (ascent, descent) = t.glyph_vextent(15.0);
     let caret_y0 = (path_baseline - ascent) as usize;
     let caret_y1 = (path_baseline - descent) as usize;
-    if focused && let Some((lo, hi)) = save_dir_cursor.selection() {
+    if focused
+        && ime_preedit.is_empty()
+        && let Some((lo, hi)) = save_dir_cursor.selection()
+    {
         let x0 = path_text_x0 + x_for_char_index(Some(t), &shown, 15.0, lo);
         let x1 = path_text_x0 + x_for_char_index(Some(t), &shown, 15.0, hi);
         canvas.fill(
@@ -95,16 +103,35 @@ pub(super) fn draw_capture(
         path_rect,
     );
     if focused {
-        let cx = (path_text_x0 + x_for_char_index(Some(t), &shown, 15.0, save_dir_cursor.cursor))
-            as usize;
-        canvas.fill(
-            Rect {
-                x0: cx,
-                y0: caret_y0,
-                x1: cx + 1,
-                y1: caret_y1,
-            },
-            TEXT,
+        let caret_idx = preedit_range.as_ref().map_or_else(
+            || Some(save_dir_cursor.cursor),
+            |range| preedit_caret_index(range.start, ime_preedit, ime_preedit_cursor),
         );
+        if let Some(range) = preedit_range.as_ref() {
+            let x0 = path_text_x0 + x_for_char_index(Some(t), &shown, 15.0, range.start);
+            let x1 = path_text_x0 + x_for_char_index(Some(t), &shown, 15.0, range.end);
+            let underline_y = caret_y1.min(path_rect.y1.saturating_sub(2));
+            canvas.fill(
+                Rect {
+                    x0: x0 as usize,
+                    y0: underline_y,
+                    x1: x1 as usize,
+                    y1: underline_y + 1,
+                },
+                ACCENT,
+            );
+        }
+        if let Some(caret_idx) = caret_idx {
+            let cx = (path_text_x0 + x_for_char_index(Some(t), &shown, 15.0, caret_idx)) as usize;
+            canvas.fill(
+                Rect {
+                    x0: cx,
+                    y0: caret_y0,
+                    x1: cx + 1,
+                    y1: caret_y1,
+                },
+                TEXT,
+            );
+        }
     }
 }

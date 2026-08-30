@@ -160,6 +160,34 @@ pub(super) fn x_for_char_index(text: Option<&TextRenderer>, s: &str, size: f32, 
     }
 }
 
+/// Replaces the active selection with IME preedit text for display only.
+pub(super) fn with_preedit(
+    buf: &str,
+    cursor: TextCursor,
+    preedit: &str,
+) -> (String, std::ops::Range<usize>) {
+    let (start, end) = cursor.selection().unwrap_or((cursor.cursor, cursor.cursor));
+    let mut display = buf.to_string();
+    display.replace_range(start..end, preedit);
+    let preedit_end = start + preedit.len();
+    (display, start..preedit_end)
+}
+
+/// Maps the IME's byte-wise cursor range into the composed display string.
+pub(super) fn preedit_caret_index(
+    display_start: usize,
+    preedit: &str,
+    cursor: Option<(usize, usize)>,
+) -> Option<usize> {
+    cursor.map(|(_, end)| {
+        let mut end = end.min(preedit.len());
+        while !preedit.is_char_boundary(end) {
+            end -= 1;
+        }
+        display_start + end
+    })
+}
+
 /// Byte offset of the `n`th char boundary, clamped to `s.len()`.
 pub(super) fn byte_index_for_char_count(s: &str, n: usize) -> usize {
     s.char_indices().nth(n).map(|(i, _)| i).unwrap_or(s.len())
@@ -480,5 +508,23 @@ mod tests {
         assert_eq!(char_index_for_x(None, "abc", 15.0, 5.0), 1); // 8 is closer than 0
         assert_eq!(char_index_for_x(None, "abc", 15.0, 24.0), 3);
         assert_eq!(char_index_for_x(None, "abc", 15.0, 999.0), 3); // clamps at the end
+    }
+
+    #[test]
+    fn with_preedit_replaces_selection_and_reports_display_range() {
+        let cursor = TextCursor {
+            cursor: "a日".len(),
+            anchor: 1,
+        };
+        let (display, range) = with_preedit("a日本b", cursor, "語");
+        assert_eq!(display, "a語本b");
+        assert_eq!(range, 1..4);
+    }
+
+    #[test]
+    fn preedit_caret_index_maps_and_clamps_byte_offset() {
+        assert_eq!(preedit_caret_index(2, "日本", Some((0, 3))), Some(5));
+        assert_eq!(preedit_caret_index(2, "日本", Some((0, 99))), Some(8));
+        assert_eq!(preedit_caret_index(2, "日本", None), None);
     }
 }

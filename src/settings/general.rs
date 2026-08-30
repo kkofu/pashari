@@ -4,8 +4,8 @@ use winit::keyboard::{Key, NamedKey};
 
 use super::{
     ACCENT, Btn, CONTENT_X, Settings, SettingsResult, TextCursor, apply_common_edit_key,
-    char_index_for_x, field, hover_tint_for, next_row_y_with_extra_gap, theme_colors,
-    x_for_char_index,
+    char_index_for_x, field, hover_tint_for, next_row_y_with_extra_gap, preedit_caret_index,
+    theme_colors, with_preedit, x_for_char_index,
 };
 use crate::ui::text::TextRenderer;
 use crate::ui::{Canvas, Rect};
@@ -14,7 +14,7 @@ const FILENAME_FORMAT_ROW_Y: usize = 88;
 const FILENAME_FORMAT_ROW_H: usize = 26;
 
 /// Filename template field: right of the label, follows window width.
-fn filename_format_row_layout(sw: usize) -> Rect {
+pub(super) fn filename_format_row_layout(sw: usize) -> Rect {
     const LABEL_W: usize = 140;
     field(
         CONTENT_X + LABEL_W,
@@ -24,9 +24,9 @@ fn filename_format_row_layout(sw: usize) -> Rect {
     )
 }
 
-/// Below the filename field + 2 lines of help text (hence the extra gap).
+/// Below the filename field, two help lines, and the live preview.
 const STARTUP_ROW_Y: usize =
-    next_row_y_with_extra_gap(FILENAME_FORMAT_ROW_Y, FILENAME_FORMAT_ROW_H, 50);
+    next_row_y_with_extra_gap(FILENAME_FORMAT_ROW_Y, FILENAME_FORMAT_ROW_H, 68);
 
 /// Commit the buffer: trims and keeps it, or falls back to `current` if
 /// empty.
@@ -81,6 +81,7 @@ impl Settings {
                 self.filename_format_focus = false;
                 self.filename_format_buf.clear();
                 self.filename_format_cursor = TextCursor::default();
+                self.set_text_ime_allowed(false);
                 self.request_redraw();
             }
             Key::Character(s) if self.mods.control_key() && s.eq_ignore_ascii_case("c") => {
@@ -120,6 +121,7 @@ impl Settings {
         self.filename_format_buf = self.filename_format.clone();
         self.filename_format_cursor = TextCursor::at_end(&self.filename_format_buf);
         self.filename_format_focus = true;
+        self.set_text_ime_allowed(true);
         self.request_redraw();
     }
 
@@ -151,6 +153,7 @@ impl Settings {
             commit_filename_format_value(&self.filename_format_buf, &self.filename_format);
         self.filename_format_buf.clear();
         self.filename_format_cursor = TextCursor::default();
+        self.set_text_ime_allowed(false);
         self.request_redraw();
     }
 
@@ -176,6 +179,8 @@ pub(super) fn draw_general(
     filename_format_focus: bool,
     filename_format_buf: &str,
     filename_format_cursor: TextCursor,
+    ime_preedit: &str,
+    ime_preedit_cursor: Option<(usize, usize)>,
     launch_at_startup: bool,
 ) {
     let (
@@ -200,7 +205,7 @@ pub(super) fn draw_general(
         canvas,
         CONTENT_X as f32,
         format_label_baseline,
-        "Filename format:",
+        "Filename template:",
         15.0,
         DIM,
     );
@@ -213,10 +218,14 @@ pub(super) fn draw_general(
             0x0080_8080
         },
     );
-    let format_shown = if filename_format_focus {
-        filename_format_buf.to_string()
+    let (format_shown, preedit_range) = if filename_format_focus && !ime_preedit.is_empty() {
+        let (display, range) =
+            with_preedit(filename_format_buf, filename_format_cursor, ime_preedit);
+        (display, Some(range))
+    } else if filename_format_focus {
+        (filename_format_buf.to_string(), None)
     } else {
-        filename_format.to_string()
+        (filename_format.to_string(), None)
     };
     let format_text_x0 = format_rect.x0 as f32 + 8.0;
     let format_baseline =
@@ -224,7 +233,10 @@ pub(super) fn draw_general(
     let (format_ascent, format_descent) = t.glyph_vextent(15.0);
     let format_caret_y0 = (format_baseline - format_ascent) as usize;
     let format_caret_y1 = (format_baseline - format_descent) as usize;
-    if filename_format_focus && let Some((lo, hi)) = filename_format_cursor.selection() {
+    if filename_format_focus
+        && ime_preedit.is_empty()
+        && let Some((lo, hi)) = filename_format_cursor.selection()
+    {
         let x0 = format_text_x0 + x_for_char_index(Some(t), &format_shown, 15.0, lo);
         let x1 = format_text_x0 + x_for_char_index(Some(t), &format_shown, 15.0, hi);
         canvas.fill(
@@ -247,34 +259,92 @@ pub(super) fn draw_general(
         format_rect,
     );
     if filename_format_focus {
-        let cx = (format_text_x0
-            + x_for_char_index(Some(t), &format_shown, 15.0, filename_format_cursor.cursor))
-            as usize;
-        canvas.fill(
-            Rect {
-                x0: cx,
-                y0: format_caret_y0,
-                x1: cx + 1,
-                y1: format_caret_y1,
-            },
-            TEXT,
-        );
+        if !ime_preedit.is_empty() {
+            let range = preedit_range.as_ref().expect("Preedit range must exist");
+            let preedit_x0 =
+                format_text_x0 + x_for_char_index(Some(t), &format_shown, 15.0, range.start);
+            let preedit_x1 =
+                format_text_x0 + x_for_char_index(Some(t), &format_shown, 15.0, range.end);
+            let underline_y = format_caret_y1.min(format_rect.y1.saturating_sub(2));
+            canvas.fill(
+                Rect {
+                    x0: preedit_x0 as usize,
+                    y0: underline_y,
+                    x1: preedit_x1 as usize,
+                    y1: underline_y + 1,
+                },
+                ACCENT,
+            );
+            if let Some(caret_idx) =
+                preedit_caret_index(range.start, ime_preedit, ime_preedit_cursor)
+            {
+                let cx = (format_text_x0
+                    + x_for_char_index(Some(t), &format_shown, 15.0, caret_idx))
+                    as usize;
+                canvas.fill(
+                    Rect {
+                        x0: cx,
+                        y0: format_caret_y0,
+                        x1: cx + 1,
+                        y1: format_caret_y1,
+                    },
+                    TEXT,
+                );
+            }
+        } else {
+            let cx = (format_text_x0
+                + x_for_char_index(Some(t), &format_shown, 15.0, filename_format_cursor.cursor))
+                as usize;
+            canvas.fill(
+                Rect {
+                    x0: cx,
+                    y0: format_caret_y0,
+                    x1: cx + 1,
+                    y1: format_caret_y1,
+                },
+                TEXT,
+            );
+        }
     }
-    // Format help text (2 lines to fit the width).
+    // Align the rendered value with the field text so their relationship is clear.
+    let now = chrono::Local::now();
+    let preview = crate::export::render_filename_preview(&format_shown, now, 1, 1);
     t.draw(
         canvas,
         CONTENT_X as f32,
-        (format_rect.y1 + 16) as f32,
-        "Date/time: any chrono format, e.g. %Y %m %d %H %M %S",
+        (format_rect.y1 + 22) as f32,
+        "Preview:",
         13.0,
+        DIM,
+    );
+    t.draw_clipped(
+        canvas,
+        format_text_x0,
+        (format_rect.y1 + 22) as f32,
+        &preview,
+        14.0,
+        TEXT,
+        Rect {
+            x0: format_rect.x0,
+            y0: format_rect.y1 + 6,
+            x1: format_rect.x1,
+            y1: format_rect.y1 + 28,
+        },
+    );
+    t.draw(
+        canvas,
+        CONTENT_X as f32,
+        (format_rect.y1 + 42) as f32,
+        "Date/time: chrono format, e.g. %Y-%m-%d_%H-%M-%S",
+        12.0,
         DIM,
     );
     t.draw(
         canvas,
         CONTENT_X as f32,
-        (format_rect.y1 + 34) as f32,
+        (format_rect.y1 + 58) as f32,
         "Counter: %n (skip existing files) / %#n (persistent), e.g. %04n",
-        13.0,
+        12.0,
         DIM,
     );
 
