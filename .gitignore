@@ -2,3 +2,4 @@
 # Claude Code向けの内部メモ・設計ドキュメント。公開リポジトリには含めない（ローカル参照専用）。
 /CLAUDE.md
 /docs/
+/AGENTS.md
