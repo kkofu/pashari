@@ -2558,6 +2558,36 @@ impl Overlay {
         Ok(overlay)
     }
 
+    /// Completes a full-desktop screenshot without showing the selection UI.
+    pub(crate) fn complete_full_screenshot(&mut self) {
+        let selection = Rect {
+            x0: 0,
+            y0: 0,
+            x1: self.frozen.width,
+            y1: self.frozen.height,
+        };
+        self.outcome = Some(Outcome::Captured {
+            action: Action::Save,
+            shot: crop_region(&self.frozen.bright, self.frozen.width, selection),
+        });
+        self.finish();
+    }
+
+    /// Starts recording the whole virtual desktop immediately, keeping the
+    /// existing recording control bar available for stopping it.
+    pub(crate) fn start_full_record(&mut self, event_loop: &ActiveEventLoop) {
+        self.selection = Some(Rect {
+            x0: 0,
+            y0: 0,
+            x1: self.frozen.width,
+            y1: self.frozen.height,
+        });
+        self.enter_record_setup(event_loop);
+        if !self.finished {
+            self.begin_recording(event_loop);
+        }
+    }
+
     /// Enumerates top-level windows for auto region snapping on a
     /// background thread, applying the result via `set_snapshot` once
     /// ready (dragging a selection works fine without it in the

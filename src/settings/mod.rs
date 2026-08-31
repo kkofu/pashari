@@ -289,6 +289,8 @@ pub enum SettingsResult {
 /// fields that it would otherwise bloat `SettingsResult` itself.
 pub struct SavedSettings {
     pub hotkey: Vec<String>,
+    pub hotkey_full_screenshot: Vec<String>,
+    pub hotkey_full_record: Vec<String>,
     pub save_dir_png: String,
     pub save_dir_mp4: String,
     pub save_dir_gif: String,
@@ -359,6 +361,8 @@ pub struct Settings {
     tab: Tab,
 
     hotkey: Vec<String>,
+    hotkey_full_screenshot: Vec<String>,
+    hotkey_full_record: Vec<String>,
     save_dir_png: String,
     save_dir_mp4: String,
     save_dir_gif: String,
@@ -648,6 +652,8 @@ impl Settings {
             dark,
             tab: Tab::General,
             hotkey: hk.hotkey,
+            hotkey_full_screenshot: hk.hotkey_full_screenshot,
+            hotkey_full_record: hk.hotkey_full_record,
             save_dir_png: cfg.save_dir_png,
             save_dir_mp4: cfg.save_dir_mp4,
             save_dir_gif: cfg.save_dir_gif,
@@ -1169,6 +1175,36 @@ impl Settings {
                     }
                 }
                 CaptureTarget::Local(action) => {
+                    if matches!(
+                        action,
+                        LocalAction::FullScreenshot | LocalAction::FullRecord
+                    ) {
+                        if let PhysicalKey::Code(code) = event.physical_key
+                            && let Some(spec) = build_hotkey(self.mods, code)
+                        {
+                            let candidate = crate::hotkey::parse(&spec);
+                            let duplicate = candidate.is_some_and(|candidate| {
+                                [&self.hotkey, &self.hotkey_full_screenshot, &self.hotkey_full_record]
+                                    .iter()
+                                    .flat_map(|specs| specs.iter())
+                                    .filter_map(|s| crate::hotkey::parse(s))
+                                    .any(|key| key == candidate)
+                            });
+                            if !duplicate {
+                                match action {
+                                    LocalAction::FullScreenshot => {
+                                        self.hotkey_full_screenshot.push(spec)
+                                    }
+                                    LocalAction::FullRecord => self.hotkey_full_record.push(spec),
+                                    _ => unreachable!(),
+                                }
+                            }
+                            self.capturing = None;
+                            self.hotkey_error = None;
+                            self.request_redraw();
+                        }
+                        return None;
+                    }
                     if let winit::keyboard::Key::Character(s) = &event.logical_key
                         && let Some(ch) = s.chars().next()
                     {
@@ -1537,6 +1573,8 @@ impl Settings {
             | Btn::UploadField(_) => self.activate_upload(btn),
             Btn::Save => Some(SettingsResult::Saved(Box::new(SavedSettings {
                 hotkey: self.hotkey.clone(),
+                hotkey_full_screenshot: self.hotkey_full_screenshot.clone(),
+                hotkey_full_record: self.hotkey_full_record.clone(),
                 save_dir_png: self.save_dir_png.clone(),
                 save_dir_mp4: self.save_dir_mp4.clone(),
                 save_dir_gif: self.save_dir_gif.clone(),

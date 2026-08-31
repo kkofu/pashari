@@ -18,6 +18,8 @@ use crate::ui::{Canvas, Rect, draw_refresh_icon_clipped};
 pub(super) enum LocalAction {
     Undo,
     Redo,
+    FullScreenshot,
+    FullRecord,
     ReuseRegion,
     ClearSelection,
     SaveAs,
@@ -54,7 +56,7 @@ pub(super) struct HotkeyRow {
 }
 
 /// The 21 rows shown in the Hotkeys tab, in display order within each group.
-pub(super) const HOTKEY_ROWS: [HotkeyRow; 21] = [
+pub(super) const HOTKEY_ROWS: [HotkeyRow; 23] = [
     HotkeyRow {
         action: LocalAction::Undo,
         label: "Undo",
@@ -63,6 +65,16 @@ pub(super) const HOTKEY_ROWS: [HotkeyRow; 21] = [
     HotkeyRow {
         action: LocalAction::Redo,
         label: "Redo",
+        group: ActionGroup::General,
+    },
+    HotkeyRow {
+        action: LocalAction::FullScreenshot,
+        label: "Full-screen screenshot",
+        group: ActionGroup::General,
+    },
+    HotkeyRow {
+        action: LocalAction::FullRecord,
+        label: "Full-screen recording",
         group: ActionGroup::General,
     },
     HotkeyRow {
@@ -203,6 +215,7 @@ const EDITOR_GROUP: [LocalAction; 11] = [
 fn conflict_groups(action: LocalAction) -> &'static [&'static [LocalAction]] {
     use LocalAction::*;
     match action {
+        FullScreenshot | FullRecord => &[],
         Undo | Redo => &[&REGION_GROUP, &EDITOR_GROUP],
         ReuseRegion | ClearSelection | SaveAs | EditExternal | Quit | MenuSave | MenuCopy
         | MenuEdit | MenuUpload | MenuRecord => &[&REGION_GROUP],
@@ -250,6 +263,10 @@ fn label_for(action: LocalAction) -> &'static str {
         .unwrap_or("?")
 }
 
+fn is_global_action(action: LocalAction) -> bool {
+    matches!(action, LocalAction::FullScreenshot | LocalAction::FullRecord)
+}
+
 /// The default bindings for `action` from `cfg` (multiple allowed). The
 /// `Config`-based counterpart of `Settings::local_keys`; always reads from
 /// `Config::default()` as the single source of truth for defaults.
@@ -258,6 +275,8 @@ fn default_local_keys(cfg: &crate::store::hotkeys::HotkeyConfig, action: LocalAc
     match action {
         Undo => &cfg.hotkey_undo,
         Redo => &cfg.hotkey_redo,
+        FullScreenshot => &cfg.hotkey_full_screenshot,
+        FullRecord => &cfg.hotkey_full_record,
         ReuseRegion => &cfg.hotkey_reuse_region,
         ClearSelection => &cfg.hotkey_clear_selection,
         SaveAs => &cfg.hotkey_save_as,
@@ -729,6 +748,8 @@ impl Settings {
         match a {
             Undo => &self.hotkey_undo,
             Redo => &self.hotkey_redo,
+            FullScreenshot => &self.hotkey_full_screenshot,
+            FullRecord => &self.hotkey_full_record,
             ReuseRegion => &self.hotkey_reuse_region,
             ClearSelection => &self.hotkey_clear_selection,
             SaveAs => &self.hotkey_save_as,
@@ -756,6 +777,8 @@ impl Settings {
         match a {
             Undo => &mut self.hotkey_undo,
             Redo => &mut self.hotkey_redo,
+            FullScreenshot => &mut self.hotkey_full_screenshot,
+            FullRecord => &mut self.hotkey_full_record,
             ReuseRegion => &mut self.hotkey_reuse_region,
             ClearSelection => &mut self.hotkey_clear_selection,
             SaveAs => &mut self.hotkey_save_as,
@@ -823,6 +846,18 @@ impl Settings {
     /// unmodified if the sets match regardless of order).
     pub(super) fn is_modified(&self, action: LocalAction) -> bool {
         let default_cfg = crate::store::hotkeys::HotkeyConfig::default();
+        if is_global_action(action) {
+            let cur: Vec<_> = self
+                .local_keys(action)
+                .iter()
+                .filter_map(|s| crate::hotkey::parse(s))
+                .collect();
+            let def: Vec<_> = default_local_keys(&default_cfg, action)
+                .iter()
+                .filter_map(|s| crate::hotkey::parse(s))
+                .collect();
+            return cur.len() != def.len() || !cur.iter().all(|k| def.contains(k));
+        }
         let cur: Vec<LocalKey> = self
             .local_keys(action)
             .iter()
@@ -860,6 +895,12 @@ impl Settings {
             return;
         }
         let default_cfg = crate::store::hotkeys::HotkeyConfig::default();
+        if is_global_action(action) {
+            *self.local_keys_mut(action) = default_local_keys(&default_cfg, action).to_vec();
+            self.hotkey_error = None;
+            self.request_redraw();
+            return;
+        }
         let Some(key) = default_local_keys(&default_cfg, action)
             .first()
             .and_then(|s| crate::localkey::parse(s))

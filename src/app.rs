@@ -57,6 +57,8 @@ pub struct App {
     /// The currently registered hotkeys (used for unregistering on
     /// re-registration and matching against incoming events).
     current_hotkeys: Vec<HotKey>,
+    full_screenshot_hotkeys: Vec<HotKey>,
+    full_record_hotkeys: Vec<HotKey>,
     /// A handle for sending `UserEvent`s from other threads/processes.
     proxy: EventLoopProxy<UserEvent>,
     tray: Option<TrayIcon>,
@@ -89,6 +91,14 @@ impl App {
                 Some(Modifiers::CONTROL | Modifiers::SHIFT),
                 Code::Digit2,
             )],
+            full_screenshot_hotkeys: vec![HotKey::new(
+                Some(Modifiers::CONTROL | Modifiers::SHIFT),
+                Code::Digit3,
+            )],
+            full_record_hotkeys: vec![HotKey::new(
+                Some(Modifiers::CONTROL | Modifiers::SHIFT),
+                Code::Digit4,
+            )],
             proxy,
             tray: None,
             quit_id: None,
@@ -111,6 +121,15 @@ impl App {
                 self.current_hotkeys = hks;
                 if let Err(e) = manager.register_all(&self.current_hotkeys) {
                     eprintln!("ホットキー登録に失敗: {e}");
+                }
+                let hotkey_cfg = store::hotkeys::snapshot();
+                self.full_screenshot_hotkeys = parse_hotkeys_or_empty(&hotkey_cfg.hotkey_full_screenshot);
+                self.full_record_hotkeys = parse_hotkeys_or_empty(&hotkey_cfg.hotkey_full_record);
+                if let Err(e) = manager.register_all(&self.full_screenshot_hotkeys) {
+                    eprintln!("全画面ホットキー登録に失敗: {e}");
+                }
+                if let Err(e) = manager.register_all(&self.full_record_hotkeys) {
+                    eprintln!("全画面録画ホットキー登録に失敗: {e}");
                 }
                 self.hotkey_manager = Some(manager);
             }
@@ -163,6 +182,32 @@ impl App {
                 self.session = Some(session);
             }
             Err(e) => eprintln!("キャプチャ開始に失敗: {e}"),
+        }
+    }
+
+    fn start_full_screenshot(&mut self, event_loop: &ActiveEventLoop) {
+        drain_hotkeys();
+        match Overlay::start(event_loop) {
+            Ok(mut session) => {
+                session.complete_full_screenshot();
+                handle_outcome(session.take_outcome());
+            }
+            Err(e) => eprintln!("全画面スクショ開始に失敗: {e}"),
+        }
+    }
+
+    fn start_full_record(&mut self, event_loop: &ActiveEventLoop) {
+        drain_hotkeys();
+        match Overlay::start(event_loop) {
+            Ok(mut session) => {
+                session.start_full_record(event_loop);
+                if session.finished() {
+                    handle_outcome(session.take_outcome());
+                } else {
+                    self.session = Some(session);
+                }
+            }
+            Err(e) => eprintln!("全画面録画開始に失敗: {e}"),
         }
     }
 
@@ -270,6 +315,8 @@ impl App {
             SettingsResult::Saved(saved) => {
                 let SavedSettings {
                     hotkey,
+                    hotkey_full_screenshot,
+                    hotkey_full_record,
                     save_dir_png,
                     save_dir_mp4,
                     save_dir_gif,
@@ -318,6 +365,8 @@ impl App {
                 } = *saved;
                 let hotkeys_cfg = HotkeyConfig {
                     hotkey,
+                    hotkey_full_screenshot,
+                    hotkey_full_record,
                     hotkey_undo,
                     hotkey_redo,
                     hotkey_reuse_region,
@@ -384,6 +433,8 @@ impl App {
         uploaders_cfg: UploaderConfig,
     ) {
         let specs = hotkeys_cfg.hotkey.clone();
+        let full_screenshot_specs = hotkeys_cfg.hotkey_full_screenshot.clone();
+        let full_record_specs = hotkeys_cfg.hotkey_full_record.clone();
         let launch_at_startup = cfg.launch_at_startup;
         store::set_and_save(cfg);
         store::hotkeys::set_and_save(hotkeys_cfg);
@@ -392,11 +443,23 @@ impl App {
 
         if let Some(mgr) = self.hotkey_manager.as_ref() {
             let _ = mgr.unregister_all(&self.current_hotkeys);
+            let _ = mgr.unregister_all(&self.full_screenshot_hotkeys);
+            let _ = mgr.unregister_all(&self.full_record_hotkeys);
             let hks = parse_hotkeys(&specs);
             if let Err(e) = mgr.register_all(&hks) {
                 eprintln!("ホットキー再登録に失敗: {e}");
             }
             self.current_hotkeys = hks;
+            let full_screenshot = parse_hotkeys_or_empty(&full_screenshot_specs);
+            let full_record = parse_hotkeys_or_empty(&full_record_specs);
+            if let Err(e) = mgr.register_all(&full_screenshot) {
+                eprintln!("全画面ホットキー再登録に失敗: {e}");
+            }
+            if let Err(e) = mgr.register_all(&full_record) {
+                eprintln!("全画面録画ホットキー再登録に失敗: {e}");
+            }
+            self.full_screenshot_hotkeys = full_screenshot;
+            self.full_record_hotkeys = full_record;
         }
         println!("設定を保存しました");
     }
@@ -557,9 +620,20 @@ impl ApplicationHandler<UserEvent> for App {
                 && self.session.as_ref().is_some_and(Overlay::in_record_flow));
         if can_start {
             while let Ok(ev) = GlobalHotKeyEvent::receiver().try_recv() {
-                if ev.state == HotKeyState::Pressed
-                    && self.current_hotkeys.iter().any(|hk| hk.id() == ev.id)
-                {
+                if ev.state != HotKeyState::Pressed {
+                    continue;
+                }
+                if self.session.is_none() {
+                    if self.full_screenshot_hotkeys.iter().any(|hk| hk.id() == ev.id) {
+                        self.start_full_screenshot(event_loop);
+                        break;
+                    }
+                    if self.full_record_hotkeys.iter().any(|hk| hk.id() == ev.id) {
+                        self.start_full_record(event_loop);
+                        break;
+                    }
+                }
+                if self.current_hotkeys.iter().any(|hk| hk.id() == ev.id) {
                     if self.session.is_none() {
                         self.start_session(event_loop);
                     } else {
@@ -808,4 +882,8 @@ fn parse_hotkeys(specs: &[String]) -> Vec<HotKey> {
     } else {
         hks
     }
+}
+
+fn parse_hotkeys_or_empty(specs: &[String]) -> Vec<HotKey> {
+    specs.iter().filter_map(|s| hotkey::parse(s)).collect()
 }

@@ -16,6 +16,12 @@ pub struct HotkeyConfig {
     /// The global hotkey that starts region selection (e.g. "Ctrl+Shift+2"). Multiple allowed.
     #[serde(deserialize_with = "string_or_list")]
     pub hotkey: Vec<String>,
+    /// Global hotkey that saves the whole virtual desktop as a PNG.
+    #[serde(deserialize_with = "string_or_list")]
+    pub hotkey_full_screenshot: Vec<String>,
+    /// Global hotkey that starts recording the whole virtual desktop.
+    #[serde(deserialize_with = "string_or_list")]
+    pub hotkey_full_record: Vec<String>,
 
     // --- In-app local shortcuts (each element parsed by
     // `localkey::parse`; changeable via the settings GUI's Hotkeys tab.
@@ -90,6 +96,8 @@ impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
             hotkey: vec!["Ctrl+Shift+2".into()],
+            hotkey_full_screenshot: vec!["Ctrl+Shift+3".into()],
+            hotkey_full_record: vec!["Ctrl+Shift+4".into()],
             hotkey_undo: vec!["Ctrl+Z".into()],
             hotkey_redo: vec!["Ctrl+Shift+Z".into()],
             hotkey_reuse_region: vec!["R".into()],
@@ -202,6 +210,8 @@ fn render_toml(c: &HotkeyConfig) -> String {
 # 修飾子: Ctrl / Shift / Alt / Super(Win)。キー: 数字 / 英字 / F1..F12 / NumpadSubtract など。
 # 例: ["Ctrl+Shift+2", "Alt+PrintScreen"]
 hotkey = {}
+hotkey_full_screenshot = {}
+hotkey_full_record = {}
 
 # アプリ内のローカルショートカット（Undo/Redo・領域選択・エディタ。複数登録可）。
 # 設定GUIの Hotkeys タブから変更してください。手編集する場合は
@@ -229,6 +239,8 @@ hotkey_editor_tool_text = {}
 hotkey_editor_tool_number_marker = {}
 "#,
         render_string_list(&c.hotkey),
+        render_string_list(&c.hotkey_full_screenshot),
+        render_string_list(&c.hotkey_full_record),
         render_string_list(&c.hotkey_undo),
         render_string_list(&c.hotkey_redo),
         render_string_list(&c.hotkey_reuse_region),
