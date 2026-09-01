@@ -1,6 +1,6 @@
 [package]
 name = "pashari"
-version = "1.0.4"
+version = "1.0.5"
 edition = "2024"
 description = "Screenshot / Screen record for Windows"
 license = "CC0-1.0"
