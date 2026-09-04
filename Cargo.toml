@@ -13,10 +13,12 @@ winit = "0.30"
 softbuffer = "0.4"
 xcap = "0.0.14"
 image = "0.25"
+rusto-rs = "0.2"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 ab_glyph = "0.2"
 arboard = "3"
 windows-capture = "2"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 gif = "0.14"
 cpal = "0.15"
 rubato = "0.15"

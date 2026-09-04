@@ -23,6 +23,7 @@ use crate::editor;
 use crate::export;
 use crate::hotkey;
 use crate::overlay::{self, Action, Outcome, Overlay};
+use crate::ocr;
 use crate::settings::{SavedSettings, Settings, SettingsResult};
 use crate::shell;
 use crate::startup;
@@ -348,6 +349,7 @@ impl App {
                     hotkey_menu_copy,
                     hotkey_menu_edit,
                     hotkey_menu_upload,
+                    hotkey_menu_ocr,
                     hotkey_menu_record,
                     hotkey_editor_reset_zoom,
                     hotkey_editor_tool_select,
@@ -378,6 +380,7 @@ impl App {
                     hotkey_menu_copy,
                     hotkey_menu_edit,
                     hotkey_menu_upload,
+                    hotkey_menu_ocr,
                     hotkey_menu_record,
                     hotkey_editor_reset_zoom,
                     hotkey_editor_tool_select,
@@ -678,6 +681,7 @@ fn handle_outcome(outcome: Option<Outcome>) {
             Action::EditExternal => spawn_editor_external(&shot),
             // Upload runs asynchronously on another thread (doesn't block the UI).
             Action::Upload => spawn_upload(shot),
+            Action::Ocr => spawn_ocr(shot),
             // Record is already handled inside overlay.
             Action::Record => {}
             // Quit never actually reaches here, since overlay ends
@@ -796,6 +800,22 @@ fn spawn_upload(shot: export::Shot) {
                 println!("{text}");
             }
         }
+    });
+}
+
+fn spawn_ocr(shot: export::Shot) {
+    std::thread::spawn(move || match ocr::recognize(shot) {
+        Ok(text) => {
+            if text.is_empty() {
+                println!("OCR: テキストは検出されませんでした");
+                return;
+            }
+            match arboard::Clipboard::new().and_then(|mut c| c.set_text(text.clone())) {
+                Ok(()) => println!("OCR結果をクリップボードへコピーしました: {text}"),
+                Err(e) => eprintln!("OCR結果のクリップボードコピーに失敗: {e}"),
+            }
+        }
+        Err(e) => eprintln!("OCRに失敗しました（rusto）: {e}"),
     });
 }
 

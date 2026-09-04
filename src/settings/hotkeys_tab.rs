@@ -29,6 +29,7 @@ pub(super) enum LocalAction {
     MenuCopy,
     MenuEdit,
     MenuUpload,
+    MenuOcr,
     MenuRecord,
     EditorResetZoom,
     EditorToolSelect,
@@ -56,7 +57,7 @@ pub(super) struct HotkeyRow {
 }
 
 /// The 21 rows shown in the Hotkeys tab, in display order within each group.
-pub(super) const HOTKEY_ROWS: [HotkeyRow; 23] = [
+pub(super) const HOTKEY_ROWS: [HotkeyRow; 24] = [
     HotkeyRow {
         action: LocalAction::Undo,
         label: "Undo",
@@ -115,6 +116,11 @@ pub(super) const HOTKEY_ROWS: [HotkeyRow; 23] = [
     HotkeyRow {
         action: LocalAction::MenuUpload,
         label: "Upload",
+        group: ActionGroup::Region,
+    },
+    HotkeyRow {
+        action: LocalAction::MenuOcr,
+        label: "OCR",
         group: ActionGroup::Region,
     },
     HotkeyRow {
@@ -182,7 +188,7 @@ const GROUPS: [(ActionGroup, &str); 3] = [
 
 /// Active-key sets per context, used for conflict detection (Undo/Redo
 /// belong to both).
-const REGION_GROUP: [LocalAction; 12] = [
+const REGION_GROUP: [LocalAction; 13] = [
     LocalAction::Undo,
     LocalAction::Redo,
     LocalAction::ReuseRegion,
@@ -193,6 +199,7 @@ const REGION_GROUP: [LocalAction; 12] = [
     LocalAction::MenuCopy,
     LocalAction::MenuEdit,
     LocalAction::MenuUpload,
+    LocalAction::MenuOcr,
     LocalAction::MenuRecord,
     LocalAction::Quit,
 ];
@@ -218,7 +225,7 @@ fn conflict_groups(action: LocalAction) -> &'static [&'static [LocalAction]] {
         FullScreenshot | FullRecord => &[],
         Undo | Redo => &[&REGION_GROUP, &EDITOR_GROUP],
         ReuseRegion | ClearSelection | SaveAs | EditExternal | Quit | MenuSave | MenuCopy
-        | MenuEdit | MenuUpload | MenuRecord => &[&REGION_GROUP],
+        | MenuEdit | MenuUpload | MenuOcr | MenuRecord => &[&REGION_GROUP],
         EditorResetZoom
         | EditorToolSelect
         | EditorToolArrow
@@ -286,6 +293,7 @@ fn default_local_keys(cfg: &crate::store::hotkeys::HotkeyConfig, action: LocalAc
         MenuCopy => &cfg.hotkey_menu_copy,
         MenuEdit => &cfg.hotkey_menu_edit,
         MenuUpload => &cfg.hotkey_menu_upload,
+        MenuOcr => &cfg.hotkey_menu_ocr,
         MenuRecord => &cfg.hotkey_menu_record,
         EditorResetZoom => &cfg.hotkey_editor_reset_zoom,
         EditorToolSelect => &cfg.hotkey_editor_tool_select,
@@ -759,6 +767,7 @@ impl Settings {
             MenuCopy => &self.hotkey_menu_copy,
             MenuEdit => &self.hotkey_menu_edit,
             MenuUpload => &self.hotkey_menu_upload,
+            MenuOcr => &self.hotkey_menu_ocr,
             MenuRecord => &self.hotkey_menu_record,
             EditorResetZoom => &self.hotkey_editor_reset_zoom,
             EditorToolSelect => &self.hotkey_editor_tool_select,
@@ -788,6 +797,7 @@ impl Settings {
             MenuCopy => &mut self.hotkey_menu_copy,
             MenuEdit => &mut self.hotkey_menu_edit,
             MenuUpload => &mut self.hotkey_menu_upload,
+            MenuOcr => &mut self.hotkey_menu_ocr,
             MenuRecord => &mut self.hotkey_menu_record,
             EditorResetZoom => &mut self.hotkey_editor_reset_zoom,
             EditorToolSelect => &mut self.hotkey_editor_tool_select,

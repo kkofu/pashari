@@ -62,6 +62,9 @@ pub struct HotkeyConfig {
     /// Action menu: Record video (region selection).
     #[serde(deserialize_with = "string_or_list")]
     pub hotkey_menu_record: Vec<String>,
+    /// Action menu: OCR the selection.
+    #[serde(deserialize_with = "string_or_list")]
+    pub hotkey_menu_ocr: Vec<String>,
     /// Reset zoom/pan to the initial view (editor).
     #[serde(deserialize_with = "string_or_list")]
     pub hotkey_editor_reset_zoom: Vec<String>,
@@ -110,6 +113,7 @@ impl Default for HotkeyConfig {
             hotkey_menu_edit: vec!["E".into()],
             hotkey_menu_upload: vec!["U".into()],
             hotkey_menu_record: vec!["V".into()],
+            hotkey_menu_ocr: vec!["O".into()],
             hotkey_editor_reset_zoom: vec!["Ctrl+0".into()],
             hotkey_editor_tool_select: vec!["V".into()],
             hotkey_editor_tool_arrow: vec!["A".into()],
@@ -228,6 +232,7 @@ hotkey_menu_copy = {}
 hotkey_menu_edit = {}
 hotkey_menu_upload = {}
 hotkey_menu_record = {}
+hotkey_menu_ocr = {}
 hotkey_editor_reset_zoom = {}
 hotkey_editor_tool_select = {}
 hotkey_editor_tool_arrow = {}
@@ -253,6 +258,7 @@ hotkey_editor_tool_number_marker = {}
         render_string_list(&c.hotkey_menu_edit),
         render_string_list(&c.hotkey_menu_upload),
         render_string_list(&c.hotkey_menu_record),
+        render_string_list(&c.hotkey_menu_ocr),
         render_string_list(&c.hotkey_editor_reset_zoom),
         render_string_list(&c.hotkey_editor_tool_select),
         render_string_list(&c.hotkey_editor_tool_arrow),

@@ -97,6 +97,8 @@ pub enum Action {
     Edit,
     /// Hand off to an external editor (Shift+E; hotkey-only, no button).
     EditExternal,
+    /// OCR the selection and copy recognized text to the clipboard.
+    Ocr,
     Upload,
     Record,
     /// Discards the selection and ends the capture session (same as Esc).
@@ -437,6 +439,7 @@ impl RegionKeys {
                 copy: parse_local_keys(&cfg.hotkey_menu_copy),
                 edit: parse_local_keys(&cfg.hotkey_menu_edit),
                 upload: parse_local_keys(&cfg.hotkey_menu_upload),
+                ocr: parse_local_keys(&cfg.hotkey_menu_ocr),
                 record: parse_local_keys(&cfg.hotkey_menu_record),
                 quit: parse_local_keys(&cfg.hotkey_quit),
             },

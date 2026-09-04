@@ -18,13 +18,14 @@ pub(super) struct MenuKeys {
     pub copy: Vec<LocalKey>,
     pub edit: Vec<LocalKey>,
     pub upload: Vec<LocalKey>,
+    pub ocr: Vec<LocalKey>,
     pub record: Vec<LocalKey>,
     pub quit: Vec<LocalKey>,
 }
 
-/// Number of action buttons (Save/Copy/Edit/Upload/Video/Quit — not
+/// Number of action buttons (Save/Copy/Edit/Upload/OCR/Video/Quit — not
 /// counting the combined size/aspect-ratio button to their left).
-const N: usize = 6;
+const N: usize = 7;
 /// Gap between the selection outline and the menu.
 const MARGIN: usize = 10;
 /// Width of the combined size/aspect-ratio button, in `ACTION_BTN`
@@ -147,6 +148,7 @@ impl Menu {
             (Action::Copy, "Copy", keys.copy.clone(), 0),
             (Action::Edit, "Edit", keys.edit.clone(), 0),
             (Action::Upload, "Upload", keys.upload.clone(), 0),
+            (Action::Ocr, "OCR", keys.ocr.clone(), 0),
             (Action::Record, "Video", keys.record.clone(), 0),
             (Action::Quit, "Quit", keys.quit.clone(), 0),
         ];
@@ -338,6 +340,7 @@ mod tests {
             copy: vec![LocalKey::new(false, false, false, 'c')],
             edit: vec![LocalKey::new(false, false, false, 'e')],
             upload: vec![LocalKey::new(false, false, false, 'u')],
+            ocr: vec![LocalKey::new(false, false, false, 'o')],
             record: vec![LocalKey::new(false, false, false, 'v')],
             quit: vec![LocalKey::new(false, false, false, 'q')],
         }
@@ -391,22 +394,28 @@ mod tests {
         );
         // Placed below the selection (y1=200 plus margin).
         assert!(m.buttons[0].rect.y0 >= 200);
-        assert_eq!(m.buttons.len(), 6);
-        // Left to right: Save / Copy / Edit / Upload / Record(Video) / Quit.
+        assert_eq!(m.buttons.len(), 7);
+        // Left to right: Save / Copy / Edit / Upload / OCR / Record(Video) / Quit.
         assert!(matches!(m.buttons[0].action, Action::Save));
         assert!(matches!(m.buttons[2].action, Action::Edit));
         assert!(matches!(m.buttons[3].action, Action::Upload));
-        assert!(matches!(m.buttons[4].action, Action::Record));
-        assert_eq!(m.buttons[4].label, "Video");
+        assert!(matches!(m.buttons[4].action, Action::Ocr));
+        assert_eq!(m.buttons[4].label, "OCR");
         assert_eq!(
             m.buttons[4].hotkeys,
+            vec![LocalKey::new(false, false, false, 'o')]
+        );
+        assert!(matches!(m.buttons[5].action, Action::Record));
+        assert_eq!(m.buttons[5].label, "Video");
+        assert_eq!(
+            m.buttons[5].hotkeys,
             vec![LocalKey::new(false, false, false, 'v')]
         );
         // Quit is furthest right.
-        assert!(matches!(m.buttons[5].action, Action::Quit));
-        assert_eq!(m.buttons[5].label, "Quit");
+        assert!(matches!(m.buttons[6].action, Action::Quit));
+        assert_eq!(m.buttons[6].label, "Quit");
         assert_eq!(
-            m.buttons[5].hotkeys,
+            m.buttons[6].hotkeys,
             vec![LocalKey::new(false, false, false, 'q')]
         );
     }

@@ -10,6 +10,7 @@ mod export;
 mod hotkey;
 mod localkey;
 mod overlay;
+mod ocr;
 mod session;
 mod settings;
 mod shell;
