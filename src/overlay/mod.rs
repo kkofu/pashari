@@ -2356,7 +2356,7 @@ fn window_hwnd(window: &Window) -> Option<windows::Win32::Foundation::HWND> {
 
 /// Excludes a window from screen capture (Graphics Capture) by setting
 /// `WDA_EXCLUDEFROMCAPTURE`, so the control bar doesn't show up in the recording.
-fn exclude_from_capture(window: &Window) {
+pub(crate) fn exclude_from_capture(window: &Window) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use windows::Win32::Foundation::HWND;
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -2429,7 +2429,7 @@ fn force_foreground(window: &Window) {
 
 /// Disables the fade-in/out animations DWM adds when showing/hiding a
 /// window, so the overlay switches instantly on capture start/end.
-fn disable_window_animations(window: &Window) {
+pub(crate) fn disable_window_animations(window: &Window) {
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use windows::Win32::Foundation::{BOOL, HWND};
     use windows::Win32::Graphics::Dwm::{DWMWA_TRANSITIONS_FORCEDISABLED, DwmSetWindowAttribute};

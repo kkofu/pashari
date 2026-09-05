@@ -3,7 +3,9 @@
 //! multiple modules including overlay/editor.
 
 pub mod text;
+pub mod toast;
 
+pub use toast::{Toast, ToastKind};
 use text::TextRenderer;
 
 /// A normalized rect (`x0..x1` and `y0..y1` are exclusive bounds).

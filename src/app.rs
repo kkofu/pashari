@@ -30,6 +30,7 @@ use crate::startup;
 use crate::store::hotkeys::HotkeyConfig;
 use crate::store::uploaders::UploaderConfig;
 use crate::store::{self, Config};
+use crate::ui::{self, Toast, ToastKind};
 use crate::update::{self, ReleaseInfo};
 use crate::upload;
 
@@ -51,6 +52,8 @@ pub enum UserEvent {
     /// `Overlay::spawn_snapshot_capture`), tagged with the owning
     /// overlay's HWND so it's applied to the right session.
     SnapshotReady(isize, overlay::snap::Snapshot),
+    /// Shows an auto-dismissing toast notification.
+    Toast(ToastKind),
 }
 
 pub struct App {
@@ -82,6 +85,10 @@ pub struct App {
     /// Set from the `--show-settings` arg (see main.rs) — shows Settings
     /// once on the first `resumed`, then is left `false`.
     show_settings_on_launch: bool,
+    /// Auto-dismissing notification popup (`None` = not showing).
+    toast: Option<Toast>,
+    /// Cached text renderer for notification text measuring and rendering.
+    text_renderer: Option<ui::text::TextRenderer>,
 }
 
 impl App {
@@ -111,6 +118,21 @@ impl App {
             shot_session: None,
             settings: None,
             show_settings_on_launch,
+            toast: None,
+            text_renderer: ui::text::TextRenderer::load(),
+        }
+    }
+
+    /// Shows or updates an auto-dismissing toast popup.
+    fn show_toast(&mut self, event_loop: &ActiveEventLoop, kind: ToastKind) {
+        if let Some(toast) = self.toast.as_mut() {
+            toast.update(kind, self.text_renderer.as_ref());
+        } else {
+            self.toast = Toast::new(event_loop, kind, self.text_renderer.as_ref());
+            eprintln!(
+                "[toast] Toast::new => {}",
+                if self.toast.is_some() { "Some" } else { "None" }
+            );
         }
     }
 
@@ -191,9 +213,10 @@ impl App {
         match Overlay::start(event_loop) {
             Ok(mut session) => {
                 session.complete_full_screenshot();
-                handle_outcome(session.take_outcome());
+                handle_outcome(session.take_outcome(), &self.proxy);
+                self.show_toast(event_loop, ToastKind::FullScreenshot);
             }
-            Err(e) => eprintln!("全画面スクショ開始に失敗: {e}"),
+            Err(e) => eprintln!("全画面スクリーンショットに失敗: {e}"),
         }
     }
 
@@ -203,7 +226,7 @@ impl App {
             Ok(mut session) => {
                 session.start_full_record(event_loop);
                 if session.finished() {
-                    handle_outcome(session.take_outcome());
+                    handle_outcome(session.take_outcome(), &self.proxy);
                 } else {
                     self.session = Some(session);
                 }
@@ -215,7 +238,7 @@ impl App {
     /// Ends the session: runs the action matching its result, and returns to idle.
     fn finish_session(&mut self) {
         if let Some(mut session) = self.session.take() {
-            handle_outcome(session.take_outcome());
+            handle_outcome(session.take_outcome(), &self.proxy);
             // session is dropped here, closing every window.
         }
         drain_hotkeys();
@@ -231,14 +254,14 @@ impl App {
                 session.spawn_snapshot_capture(self.proxy.clone());
                 self.shot_session = Some(session);
             }
-            Err(e) => eprintln!("スクショ用セッション開始に失敗: {e}"),
+            Err(e) => eprintln!("スクリーンショット用セッション開始に失敗: {e}"),
         }
     }
 
     /// Ends the screenshot session; runs the same follow-up as `finish_session`.
     fn finish_shot_session(&mut self) {
         if let Some(mut session) = self.shot_session.take() {
-            handle_outcome(session.take_outcome());
+            handle_outcome(session.take_outcome(), &self.proxy);
         }
         drain_hotkeys();
     }
@@ -541,6 +564,9 @@ impl ApplicationHandler<UserEvent> for App {
                     s.set_snapshot(snapshot);
                 }
             }
+            UserEvent::Toast(kind) => {
+                self.show_toast(event_loop, kind);
+            }
         }
     }
 
@@ -552,6 +578,14 @@ impl ApplicationHandler<UserEvent> for App {
     /// the screenshot side could wrongly reach the recording `Overlay`
     /// and stop the recording unintentionally.
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if let Some(toast) = self.toast.as_mut()
+            && toast.owns_window(id)
+        {
+            if let WindowEvent::RedrawRequested = event {
+                toast.render(self.text_renderer.as_ref());
+            }
+            return;
+        }
         if let Some(session) = self.session.as_mut()
             && session.owns_window(id)
         {
@@ -594,6 +628,10 @@ impl ApplicationHandler<UserEvent> for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.poll_menu(event_loop);
         self.poll_tray_icon(event_loop);
+
+        if self.toast.as_ref().is_some_and(|t| t.is_expired()) {
+            self.toast = None;
+        }
 
         // Whichever ControlFlow is set last wins. Calls shot_session
         // first and session second, so the recording elapsed-time
@@ -659,7 +697,7 @@ impl ApplicationHandler<UserEvent> for App {
 
 /// Runs the action matching a session's result (regular or screenshot).
 /// Shared follow-up for `finish_session`/`finish_shot_session`.
-fn handle_outcome(outcome: Option<Outcome>) {
+fn handle_outcome(outcome: Option<Outcome>, proxy: &EventLoopProxy<UserEvent>) {
     match outcome {
         Some(Outcome::Captured { action, shot }) => match action {
             Action::Save => match export::save_png(&shot) {
@@ -681,7 +719,7 @@ fn handle_outcome(outcome: Option<Outcome>) {
             Action::EditExternal => spawn_editor_external(&shot),
             // Upload runs asynchronously on another thread (doesn't block the UI).
             Action::Upload => spawn_upload(shot),
-            Action::Ocr => spawn_ocr(shot),
+            Action::Ocr => spawn_ocr(shot, proxy.clone()),
             // Record is already handled inside overlay.
             Action::Record => {}
             // Quit never actually reaches here, since overlay ends
@@ -803,19 +841,38 @@ fn spawn_upload(shot: export::Shot) {
     });
 }
 
-fn spawn_ocr(shot: export::Shot) {
-    std::thread::spawn(move || match ocr::recognize(shot) {
-        Ok(text) => {
-            if text.is_empty() {
-                println!("OCR: テキストは検出されませんでした");
-                return;
+fn spawn_ocr(shot: export::Shot, proxy: EventLoopProxy<UserEvent>) {
+    std::thread::spawn(move || {
+
+        match ocr::recognize(shot) {
+            Ok(text) => {
+                if text.is_empty() {
+                    if let Err(e) =
+                        proxy.send_event(UserEvent::Toast(ToastKind::Ocr(String::new())))
+                    {
+                        eprintln!("[toast] send_event 失敗: {e}");
+                    }
+                    return;
+                }
+
+                match arboard::Clipboard::new().and_then(|mut c| c.set_text(text.clone())) {
+                    Ok(()) => println!("OCR結果をクリップボードへコピーしました: {text}"),
+                    Err(e) => eprintln!("OCR結果のクリップボードコピーに失敗: {e}"),
+                }
+
+                if let Err(e) = proxy.send_event(UserEvent::Toast(ToastKind::Ocr(text))) {
+                    eprintln!("[toast] send_event 失敗: {e}");
+                }
             }
-            match arboard::Clipboard::new().and_then(|mut c| c.set_text(text.clone())) {
-                Ok(()) => println!("OCR結果をクリップボードへコピーしました: {text}"),
-                Err(e) => eprintln!("OCR結果のクリップボードコピーに失敗: {e}"),
+            Err(e) => {
+                eprintln!("[toast] OCR 失敗: {e}");
+                if let Err(e) = proxy.send_event(UserEvent::Toast(
+                    ToastKind::Ocr("認識に失敗しました".into()),
+                )) {
+                    eprintln!("[toast] send_event 失敗: {e}");
+                }
             }
         }
-        Err(e) => eprintln!("OCRに失敗しました（rusto）: {e}"),
     });
 }
 
