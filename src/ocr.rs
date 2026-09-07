@@ -209,7 +209,7 @@ mod tests {
         let renderer =
             crate::ui::text::TextRenderer::load().expect("TextRenderer load");
 
-        let width = 300;
+        let width = 320;
         let height = 80;
 
         let mut pixels = vec![0x00FFFFFFu32; width * height];
@@ -221,14 +221,14 @@ mod tests {
             scale: 1.0,
         };
 
-        let font_size = 28.0;
+        let font_size = 19.0;
         let baseline = renderer.baseline_for_center(40.0, font_size);
 
         renderer.draw(
             &mut canvas,
             20.0,
             baseline,
-            "こんにちは世界",
+            "あのイーハトーヴォのすきとおった風",
             font_size,
             0x000000,
         );
@@ -255,7 +255,7 @@ mod tests {
         println!("OCR recognized text: '{result}'");
 
         assert!(
-            result.contains("こんにちは") || result.contains("世界"),
+            result.contains("あのイーハトーヴォのすきとおった風"),
             "Unexpected OCR text: {result}"
         );
     }
