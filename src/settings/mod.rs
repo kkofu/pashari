@@ -59,8 +59,8 @@ use video::{ClickColorTarget, MaxResDim, click_color_picker_geom};
 
 const WIN_W: usize = 720;
 /// Minimum window height, sized to the Video tab's row count (grows as
-/// recording settings are added).
-const WIN_H: usize = 600;
+/// recording settings are added; +34 for the JXL save row).
+const WIN_H: usize = 634;
 
 /// Width of the left vertical tab bar, and the content area's left edge x.
 const SIDEBAR_W: usize = 140;
@@ -125,12 +125,14 @@ enum SaveKind {
     Png,
     Mp4,
     Gif,
+    Jxl,
 }
 
-const SAVE_KINDS: [(SaveKind, &str); 3] = [
+const SAVE_KINDS: [(SaveKind, &str); 4] = [
     (SaveKind::Png, "Screenshot"),
     (SaveKind::Mp4, "MP4"),
     (SaveKind::Gif, "GIF"),
+    (SaveKind::Jxl, "JXL"),
 ];
 
 /// An editable field of the selected profile in the Upload tab (same idea
@@ -294,6 +296,7 @@ pub struct SavedSettings {
     pub save_dir_png: String,
     pub save_dir_mp4: String,
     pub save_dir_gif: String,
+    pub save_dir_jxl: String,
     pub external_editor: String,
     pub record_show_cursor: bool,
     pub record_bitrate_mbps: u32,
@@ -367,8 +370,9 @@ pub struct Settings {
     save_dir_png: String,
     save_dir_mp4: String,
     save_dir_gif: String,
+    save_dir_jxl: String,
     /// Which save-dir path field is focused — shared between Capture's PNG
-    /// field and Video's MP4/GIF fields (same idea as `max_resolution_focus`).
+    /// field and Video's MP4/GIF/JXL fields (same idea as `max_resolution_focus`).
     save_dir_focus: Option<SaveKind>,
     /// Edit buffer for the focused save-dir field.
     save_dir_buf: String,
@@ -659,6 +663,7 @@ impl Settings {
             save_dir_png: cfg.save_dir_png,
             save_dir_mp4: cfg.save_dir_mp4,
             save_dir_gif: cfg.save_dir_gif,
+            save_dir_jxl: cfg.save_dir_jxl,
             save_dir_focus: None,
             save_dir_buf: String::new(),
             save_dir_cursor: TextCursor::default(),
@@ -790,6 +795,7 @@ impl Settings {
             SaveKind::Png => &mut self.save_dir_png,
             SaveKind::Mp4 => &mut self.save_dir_mp4,
             SaveKind::Gif => &mut self.save_dir_gif,
+            SaveKind::Jxl => &mut self.save_dir_jxl,
         }
     }
 
@@ -1581,6 +1587,7 @@ impl Settings {
                 save_dir_png: self.save_dir_png.clone(),
                 save_dir_mp4: self.save_dir_mp4.clone(),
                 save_dir_gif: self.save_dir_gif.clone(),
+                save_dir_jxl: self.save_dir_jxl.clone(),
                 launch_at_startup: self.launch_at_startup,
                 open_explorer_after_screenshot: self.open_explorer_after_screenshot,
                 external_editor: self.external_editor.clone(),
@@ -1642,6 +1649,7 @@ impl Settings {
             self.save_dir_png.clone(),
             self.save_dir_mp4.clone(),
             self.save_dir_gif.clone(),
+            self.save_dir_jxl.clone(),
         ];
         let save_dir_focus = self.save_dir_focus;
         let save_dir_buf = self.save_dir_buf.clone();
@@ -2191,6 +2199,7 @@ impl Settings {
                     SaveKind::Png => 88,
                     SaveKind::Mp4 => 88,
                     SaveKind::Gif => next_row_y(88, 26),
+                    SaveKind::Jxl => next_row_y(next_row_y(88, 26), 26),
                 };
                 let (path_rect, _) = save_row_layout(sw, y);
                 let baseline =

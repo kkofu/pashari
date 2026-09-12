@@ -28,6 +28,7 @@ use windows_capture::encoder::{
 };
 
 use super::click_ripple::{ClickTracker, unpack_color};
+use super::jxl::JxlShared;
 use super::{AudioSpec, RecordFormat, scale_pixels_nearest, scale_to_fit};
 
 const GIF_SPEED: i32 = 30;
@@ -138,6 +139,7 @@ fn run(
             &stop,
         ),
         RecordFormat::Gif => run_gif(&mut cap, &path, fps, max_width, max_height, &stop),
+        RecordFormat::Jxl => run_jxl(&mut cap, &path, fps, max_width, max_height, &stop),
     }
 }
 
@@ -277,6 +279,7 @@ fn run_gif(
         if now < next {
             std::thread::sleep(next - now);
         }
+
         next += interval;
 
         cap.capture_frame(&mut raw)?;
@@ -307,6 +310,65 @@ fn run_gif(
             .map_err(|e| format!("GIF フレーム書き出しに失敗: {e}"))?;
     }
     // Dropping encoder here writes the trailer (same as GifHandler in gif.rs).
+    Ok(())
+}
+
+/// The JXL polling loop. GDI returns BGRA, so each frame is converted to
+/// RGBA and spooled to a temp file (bounded RAM); at stop the spool is
+/// assembled to APNG and encoded by `cjxl`. Empty recordings are an error.
+fn run_jxl(
+    cap: &mut GdiCapturer,
+    path: &str,
+    fps: u32,
+    max_width: u32,
+    max_height: u32,
+    stop: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    let (w, h) = cap.size();
+    let (ow, oh) = scale_to_fit(w, h, max_width, max_height);
+    let mut shared = JxlShared::new(path.to_string(), fps)?;
+    shared.set_output_size(ow, oh);
+    let interval = interval_for_fps(fps);
+    let mut next = Instant::now();
+    let mut raw = Vec::new();
+    let mut rgba = vec![0u8; w as usize * h as usize * 4];
+    let mut resized = vec![0u8; ow as usize * oh as usize * 4];
+
+    while !stop.load(Ordering::Relaxed) {
+        let now = Instant::now();
+        if now < next {
+            std::thread::sleep(next - now);
+        }
+        next += interval;
+
+        cap.capture_frame(&mut raw)?;
+        for (px, s) in rgba.chunks_exact_mut(4).zip(raw.chunks_exact(4)) {
+            px[0] = s[2];
+            px[1] = s[1];
+            px[2] = s[0];
+            px[3] = 255;
+        }
+        let frame = if (ow, oh) != (w, h) {
+            scale_pixels_nearest(
+                &rgba,
+                w as usize,
+                h as usize,
+                &mut resized,
+                ow as usize,
+                oh as usize,
+            );
+            resized.as_slice()
+        } else {
+            rgba.as_slice()
+        };
+        shared
+            .push_frame(frame)
+            .map_err(|e| format!("JXL フレームの書き込みに失敗: {e}"))?;
+    }
+
+    shared
+        .save_to_file()
+        .map_err(|e| format!("JXL の確定に失敗: {e}"))?;
     Ok(())
 }
 

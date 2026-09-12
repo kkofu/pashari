@@ -60,6 +60,9 @@ raw-window-handle = "0.6"
 # 持つ rayon を採用する（代替案: 自前でチャンネル/条件変数によるプールを
 # 書くことも検討したが、コード量・デッドロック等のリスクが大きいため見送り）。
 rayon = "1"
+# JXL 録画の中間形式（APNG）書き用。 downstream の image 経由で既に
+# ツリー内にある png 0.18 を直接使う（MIT OR Apache-2.0）。
+png = "0.18"
 
 [build-dependencies]
 winresource = "0.1"

@@ -1,7 +1,7 @@
-//! Region recording, saved as mp4 or gif.
+//! Region recording, saved as mp4, gif, or jxl.
 //!
 //! Captures a monitor via `windows-capture`, crops each frame to the
-//! selected region, and encodes to mp4 (H264) or gif. Recording runs on a
+//! selected region, and encodes to mp4 (H264), gif, or jxl. Recording runs on a
 //! separate thread via `start_free_threaded`; [`Recorder::stop`] stops it
 //! and finalizes the file. Desktop audio and mic are held by
 //! [`audio_session`] as a dynamic audio session that lives for the whole
@@ -18,15 +18,16 @@ pub(crate) use audio_session::AudioSession;
 mod click_ripple;
 mod gdi;
 mod gif;
+mod jxl;
 mod mic;
 mod mixer;
 mod mp4_strip;
 
 use std::fs;
-use std::path::Path;
-use std::process::Command;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+use std::path::Path;
+use std::process::Command;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
@@ -49,6 +50,7 @@ use windows_capture::settings::{
 use audio::AudioFormat;
 use click_ripple::{ClickTracker, unpack_color};
 use gif::{GifFlags, GifHandler};
+use jxl::{JxlFlags, JxlHandler, JxlRecorderHandle};
 
 type HandlerError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -67,11 +69,17 @@ pub fn audio_input_device_names() -> Vec<String> {
 pub enum RecordFormat {
     Mp4,
     Gif,
+    Jxl,
 }
 
 /// Re-encodes an MP4 with the selected encoder. The original is replaced only
 /// when requested and only after the new file has been written successfully.
-pub fn reencode_mp4(path: &Path, encoder_id: u8, quality: u32, replace: bool) -> Result<(), String> {
+pub fn reencode_mp4(
+    path: &Path,
+    encoder_id: u8,
+    quality: u32,
+    replace: bool,
+) -> Result<(), String> {
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -81,7 +89,10 @@ pub fn reencode_mp4(path: &Path, encoder_id: u8, quality: u32, replace: bool) ->
     } else {
         path.with_file_name(format!("{file_name}.reencoded.mp4"))
     };
-    let temp = output.with_file_name(format!(".{}", output.file_name().unwrap().to_string_lossy()));
+    let temp = output.with_file_name(format!(
+        ".{}",
+        output.file_name().unwrap().to_string_lossy()
+    ));
     let backup = path.with_file_name(format!(".{file_name}.original.mp4"));
     if backup.exists() {
         return Err("前回の元動画退避ファイルが残っているため実行できません".to_string());
@@ -89,26 +100,69 @@ pub fn reencode_mp4(path: &Path, encoder_id: u8, quality: u32, replace: bool) ->
     let _ = fs::remove_file(&temp);
 
     let (encoder, options): (&str, Vec<String>) = match encoder_id.min(3) {
-        0 => ("hevc_nvenc", vec!["-preset", "p4", "-rc", "vbr", "-cq", &quality.to_string(), "-b:v", "0"].into_iter().map(str::to_string).collect()),
-        1 => ("hevc_qsv", vec!["-preset", "medium", "-global_quality", &quality.to_string()].into_iter().map(str::to_string).collect()),
-        2 => ("hevc_amf", vec!["-quality", "quality", "-rc", "qvbr", "-qvbr_quality_level", &quality.to_string()].into_iter().map(str::to_string).collect()),
-        _ => ("libx265", vec!["-preset", "medium", "-crf", &quality.to_string()].into_iter().map(str::to_string).collect()),
+        0 => (
+            "hevc_nvenc",
+            vec![
+                "-preset",
+                "p4",
+                "-rc",
+                "vbr",
+                "-cq",
+                &quality.to_string(),
+                "-b:v",
+                "0",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        ),
+        1 => (
+            "hevc_qsv",
+            vec!["-preset", "medium", "-global_quality", &quality.to_string()]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        ),
+        2 => (
+            "hevc_amf",
+            vec![
+                "-quality",
+                "quality",
+                "-rc",
+                "qvbr",
+                "-qvbr_quality_level",
+                &quality.to_string(),
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        ),
+        _ => (
+            "libx265",
+            vec!["-preset", "medium", "-crf", &quality.to_string()]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        ),
     };
     let mut command = Command::new("ffmpeg");
-        #[cfg(windows)]
-        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        let status = command
-            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
-            .arg(path)
-            .args(["-map", "0:v:0", "-map", "0:a?", "-c:v", encoder])
-            .args(options)
-            .args(["-pix_fmt", "yuv420p", "-c:a", "copy", "-map_metadata", "0"])
-            .arg(&temp)
-            .status()
-            .map_err(|e| format!("ffmpegを起動できません: {e}"))?;
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let status = command
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .arg(path)
+        .args(["-map", "0:v:0", "-map", "0:a?", "-c:v", encoder])
+        .args(options)
+        .args(["-pix_fmt", "yuv420p", "-c:a", "copy", "-map_metadata", "0"])
+        .arg(&temp)
+        .status()
+        .map_err(|e| format!("ffmpegを起動できません: {e}"))?;
     if !status.success() {
         let _ = fs::remove_file(&temp);
-        return Err(format!("{encoder} が終了コード {:?} を返しました", status.code()));
+        return Err(format!(
+            "{encoder} が終了コード {:?} を返しました",
+            status.code()
+        ));
     }
 
     if !replace {
@@ -144,10 +198,10 @@ pub struct RecordRequest {
     pub fps: u32,
     /// Whether to show the mouse cursor.
     pub show_cursor: bool,
-    /// MP4 bitrate in Mbps (ignored for gif, which has no such concept).
+    /// MP4 bitrate in Mbps (ignored for gif/jxl, which have no such concept).
     pub bitrate_mbps: u32,
     /// Width cap in px; exceeding it shrinks the output preserving aspect
-    /// ratio (shared by mp4/gif). 0 = unlimited.
+    /// ratio (shared by mp4/gif/jxl). 0 = unlimited.
     pub max_width: u32,
     /// Height cap in px (0 = unlimited).
     pub max_height: u32,
@@ -165,8 +219,8 @@ pub struct RecordRequest {
     /// resampled to this rate before mixing.
     pub audio_sample_rate: u32,
     /// Whether to strip the mp4's audio track afterward if it stayed
-    /// effectively silent throughout the recording (ignored for gif, which
-    /// has no such concept).
+    /// effectively silent throughout the recording (ignored for gif/jxl, which
+    /// have no such concept).
     pub strip_silent_audio: bool,
 }
 
@@ -196,7 +250,7 @@ struct RecordFlags {
 /// Returns (width, height) shrunk to stay within `max_w`/`max_h` (each 0 =
 /// unlimited) while preserving aspect ratio; returned unchanged (never
 /// upscaled) if both already fit. An OS-independent pure function, shared
-/// by all 4 paths (mp4/gif × WGC/GDI).
+/// by all 6 paths (mp4/gif/jxl × WGC/GDI).
 fn scale_to_fit(w: u32, h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
     let mut scale = 1.0f64;
     if max_w != 0 && w > max_w {
@@ -453,8 +507,12 @@ enum RecorderInner {
     Gif {
         control: CaptureControl<GifHandler, HandlerError>,
     },
+    Jxl {
+        control: CaptureControl<JxlHandler, HandlerError>,
+        recorder: JxlRecorderHandle,
+    },
     /// GDI fallback path for a selection spanning multiple monitors (shared
-    /// by mp4/gif). `audio` is always `None` for gif, which doesn't support
+    /// by mp4/gif/jxl). `audio` is always `None` for gif/jxl, which don't support
     /// audio.
     Gdi {
         recorder: gdi::GdiRecorder,
@@ -557,6 +615,11 @@ impl Recorder {
     /// monitor, falling back to GDI polling — captured as-is, unclamped —
     /// when it spans monitors (see [`gdi`]).
     pub fn start(req: RecordRequest) -> Result<Self, Box<dyn std::error::Error>> {
+        // Fail fast for JXL: `cjxl` must be on PATH, otherwise a
+        // minutes-long recording would end in "binary not found".
+        if matches!(req.format, RecordFormat::Jxl) {
+            jxl::check_cjxl_available().map_err(|e| format!("JXL 録画を開始できません: {e}"))?;
+        }
         let req_abs = (req.x0, req.y0, req.x1, req.y1);
         let (cx, cy) = ((req.x0 + req.x1) / 2, (req.y0 + req.y1) / 2);
         let (monitor, origin) = monitor_at(cx, cy)?;
@@ -634,6 +697,29 @@ impl Recorder {
                     .map_err(|e| format!("録画開始に失敗: {e}"))?;
                 Ok(Recorder(RecorderInner::Gif { control }))
             }
+            RecordFormat::Jxl => {
+                let (recorder, shared) = JxlRecorderHandle::new(req.path.clone(), req.fps)
+                    .map_err(|e| format!("JXL 録画を開始できません: {e}"))?;
+                let flags = JxlFlags {
+                    crop,
+                    fps: req.fps,
+                    max_width: req.max_width,
+                    max_height: req.max_height,
+                    show_click_ripple: req.show_click_ripple,
+                    click_color_left: req.click_color_left,
+                    click_color_right: req.click_color_right,
+                    capture_origin,
+                };
+                let settings = settings_for(
+                    monitor,
+                    ColorFormat::Rgba8,
+                    (flags, shared),
+                    req.show_cursor,
+                )?;
+                let control = JxlHandler::start_free_threaded(settings)
+                    .map_err(|e| format!("録画開始に失敗: {e}"))?;
+                Ok(Recorder(RecorderInner::Jxl { control, recorder }))
+            }
         }
     }
 
@@ -643,7 +729,7 @@ impl Recorder {
         req_abs: (i32, i32, i32, i32),
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let path = req.path.clone();
-        // gif has no audio, so only create the session for mp4.
+        // gif/jxl have no audio, so only create the session for mp4.
         let (audio, gdi_audio) = if matches!(req.format, RecordFormat::Mp4) {
             let (session, fmt, rx) = audio_session::AudioSession::start(
                 req.desktop_audio,
@@ -683,7 +769,7 @@ impl Recorder {
         }))
     }
 
-    /// Toggles desktop audio during recording (a no-op for gif, or any
+    /// Toggles desktop audio during recording (a no-op for gif/jxl, or any
     /// recording without an audio session).
     pub fn set_desktop_audio(&mut self, on: bool) {
         match &mut self.0 {
@@ -701,7 +787,7 @@ impl Recorder {
         }
     }
 
-    /// Toggles the mic during recording (a no-op for gif, or any recording
+    /// Toggles the mic during recording (a no-op for gif/jxl, or any recording
     /// without an audio session).
     pub fn set_mic(&mut self, on: bool) {
         match &mut self.0 {
@@ -720,7 +806,7 @@ impl Recorder {
     }
 
     /// Latest desktop/mic volume levels (0.0..=1.0); always (0.0, 0.0) for
-    /// a recording with no audio session (e.g. gif). For the control bar's
+    /// a recording with no audio session (e.g. gif/jxl). For the control bar's
     /// indicator.
     pub fn levels(&self) -> (f32, f32) {
         match &self.0 {
@@ -756,6 +842,12 @@ impl Recorder {
             }
             RecorderInner::Gif { control } => {
                 control.stop().map_err(|e| format!("録画停止に失敗: {e}"))?;
+            }
+            RecorderInner::Jxl { control, recorder } => {
+                control.stop().map_err(|e| format!("録画停止に失敗: {e}"))?;
+                recorder
+                    .finalize()
+                    .map_err(|e| format!("JXL の確定に失敗: {e}"))?;
             }
             RecorderInner::Gdi {
                 recorder,

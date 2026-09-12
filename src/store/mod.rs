@@ -29,7 +29,9 @@ pub struct Config {
     pub save_dir_mp4: String,
     /// gif save location. `%USERPROFILE%\Pictures\pashari` if empty.
     pub save_dir_gif: String,
-    /// The last recording output format ("mp4" | "gif"), used as the
+    /// jxl save location. `%USERPROFILE%\Pictures\pashari` if empty.
+    pub save_dir_jxl: String,
+    /// The last recording output format ("mp4" | "gif" | "jxl"), used as the
     /// initial value the next time recording setup opens.
     pub record_format: String,
     /// The last desktop-audio toggle state.
@@ -104,6 +106,7 @@ impl Default for Config {
             save_dir_png: String::new(),
             save_dir_mp4: String::new(),
             save_dir_gif: String::new(),
+            save_dir_jxl: String::new(),
             record_format: "mp4".into(),
             record_desktop_audio: false,
             record_mic: false,
@@ -149,12 +152,13 @@ pub fn snapshot() -> Config {
     CONFIG.lock().unwrap().clone()
 }
 
-/// The save folder for an extension ("png"/"mp4"/"gif"); empty means use the default.
+/// The save folder for an extension ("png"/"mp4"/"gif"/"jxl"); empty means use the default.
 pub fn save_dir_for(ext: &str) -> String {
     let cfg = CONFIG.lock().unwrap();
     match ext {
         "mp4" => cfg.save_dir_mp4.clone(),
         "gif" => cfg.save_dir_gif.clone(),
+        "jxl" => cfg.save_dir_jxl.clone(),
         _ => cfg.save_dir_png.clone(),
     }
 }
@@ -269,6 +273,7 @@ fn render_toml(c: &Config) -> String {
 save_dir_png = '{}'
 save_dir_mp4 = '{}'
 save_dir_gif = '{}'
+save_dir_jxl = '{}'
 
 # 保存ファイル名のテンプレート（拡張子は含めない。自動で付きます）。
 # 日付/時刻は chrono の strftime 書式がそのまま使えます（例: %Y %m %d
@@ -334,6 +339,7 @@ launch_at_startup = {}
         c.save_dir_png,
         c.save_dir_mp4,
         c.save_dir_gif,
+        c.save_dir_jxl,
         c.filename_format,
         c.filename_counter,
         c.record_format,

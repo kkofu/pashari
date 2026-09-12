@@ -3115,6 +3115,7 @@ dependencies = [
  "gif",
  "global-hotkey",
  "image",
+ "png 0.18.1",
  "raw-window-handle",
  "rayon",
  "rfd",

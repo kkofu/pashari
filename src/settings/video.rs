@@ -1,4 +1,4 @@
-//! Video tab: MP4/GIF save location, resolution cap, bitrate, audio
+//! Video tab: MP4/GIF/JXL save location, resolution cap, bitrate, audio
 //! devices, sample rate, checkboxes, click-ripple color picker.
 
 use winit::keyboard::{Key, NamedKey};
@@ -17,10 +17,11 @@ use crate::ui::{Canvas, PickerPart, Rect, hsv_to_rgb, marker, rgb_to_hsv};
 const VIDEO_VALUE_W: usize = 220;
 const VIDEO_VALUE_MARGIN: usize = 20;
 
-/// MP4/GIF save rows; PNG stays on the General/Capture tab.
+/// MP4/GIF/JXL save rows; PNG stays on the General/Capture tab.
 const VIDEO_SAVE_MP4_ROW_Y: usize = 88;
 const VIDEO_SAVE_ROW_H: usize = 26;
 const VIDEO_SAVE_GIF_ROW_Y: usize = next_row_y(VIDEO_SAVE_MP4_ROW_Y, VIDEO_SAVE_ROW_H);
+const VIDEO_SAVE_JXL_ROW_Y: usize = next_row_y(VIDEO_SAVE_GIF_ROW_Y, VIDEO_SAVE_ROW_H);
 
 /// Re-encode quality value box.
 const REENCODE_QUALITY_W: usize = 100;
@@ -313,7 +314,7 @@ fn audio_input_option_rect(
 /// at 1px granularity).
 const MAX_RESOLUTION_FIELD_H: usize = 26;
 const MAX_WIDTH_LABEL: &str = "Max width (px, 0=unlimited):";
-const MAX_WIDTH_ROW_Y: usize = next_row_y(VIDEO_SAVE_GIF_ROW_Y, VIDEO_SAVE_ROW_H);
+const MAX_WIDTH_ROW_Y: usize = next_row_y(VIDEO_SAVE_JXL_ROW_Y, VIDEO_SAVE_ROW_H);
 const MAX_HEIGHT_LABEL: &str = "Max height (px, 0=unlimited):";
 const MAX_HEIGHT_ROW_Y: usize = next_row_y(MAX_WIDTH_ROW_Y, MAX_RESOLUTION_FIELD_H);
 
@@ -418,6 +419,7 @@ impl Settings {
         for (kind, y) in [
             (SaveKind::Mp4, VIDEO_SAVE_MP4_ROW_Y),
             (SaveKind::Gif, VIDEO_SAVE_GIF_ROW_Y),
+            (SaveKind::Jxl, VIDEO_SAVE_JXL_ROW_Y),
         ] {
             let (path_rect, browse_rect) = save_row_layout(sw, y);
             v.push((Btn::SaveDirField(kind), path_rect));
@@ -775,7 +777,7 @@ pub(super) fn draw_video(
     buttons: &[(Btn, Rect)],
     sw: usize,
     text: Option<&TextRenderer>,
-    save_dirs: &[String; 3],
+    save_dirs: &[String; 4],
     save_dir_focus: Option<SaveKind>,
     save_dir_buf: &str,
     save_dir_cursor: TextCursor,
@@ -826,7 +828,11 @@ pub(super) fn draw_video(
 
     t.draw(canvas, CONTENT_X as f32, 72.0, "Video:", 15.0, DIM);
 
-    for (kind_idx, y) in [(1, VIDEO_SAVE_MP4_ROW_Y), (2, VIDEO_SAVE_GIF_ROW_Y)] {
+    for (kind_idx, y) in [
+        (1, VIDEO_SAVE_MP4_ROW_Y),
+        (2, VIDEO_SAVE_GIF_ROW_Y),
+        (3, VIDEO_SAVE_JXL_ROW_Y),
+    ] {
         let (kind, label) = SAVE_KINDS[kind_idx];
         let (path_rect, _) = save_row_layout(sw, y);
         let baseline = t.baseline_for_center((y + 13) as f32, 15.0);

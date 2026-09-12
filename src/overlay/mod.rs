@@ -603,6 +603,8 @@ impl Overlay {
         let cfg = crate::store::snapshot();
         let record_format = if cfg.record_format == "gif" {
             capture::RecordFormat::Gif
+        } else if cfg.record_format == "jxl" {
+            capture::RecordFormat::Jxl
         } else {
             capture::RecordFormat::Mp4
         };
@@ -674,6 +676,7 @@ impl Overlay {
         cfg.record_format = match self.record_format {
             capture::RecordFormat::Mp4 => "mp4".into(),
             capture::RecordFormat::Gif => "gif".into(),
+            capture::RecordFormat::Jxl => "jxl".into(),
         };
         cfg.record_desktop_audio = self.desktop_audio;
         cfg.record_mic = self.mic;
@@ -1085,7 +1088,7 @@ impl Overlay {
     /// Starts a disposable preview audio session, before Start is
     /// pressed, solely to drive the Desktop/Mic level meters. Separate
     /// from the actual recording's session; its output PCM is discarded
-    /// (drained in `about_to_wait`). No-op for gif, which doesn't support audio.
+    /// (drained in `about_to_wait`). No-op for gif/jxl, which don't support audio.
     fn start_preview_audio(&mut self) {
         if self.preview_audio.is_some() || !matches!(self.record_format, capture::RecordFormat::Mp4)
         {
@@ -1328,7 +1331,11 @@ impl Overlay {
         // preview one first (avoids grabbing the mic/desktop audio twice).
         self.stop_preview_audio();
         let is_mp4 = matches!(self.record_format, capture::RecordFormat::Mp4);
-        let ext = if is_mp4 { "mp4" } else { "gif" };
+        let ext = match self.record_format {
+            capture::RecordFormat::Mp4 => "mp4",
+            capture::RecordFormat::Gif => "gif",
+            capture::RecordFormat::Jxl => "jxl",
+        };
         let path = match crate::export::output_path(ext) {
             Ok(p) => p,
             Err(e) => {
@@ -1349,7 +1356,7 @@ impl Overlay {
             y1: region.y1 as i32 + oy,
             path: path.to_string_lossy().into_owned(),
             format: self.record_format,
-            // GIF has no audio.
+            // GIF/JXL carry no audio.
             desktop_audio: is_mp4 && self.desktop_audio,
             mic: is_mp4 && self.mic,
             fps: self.fps,
@@ -1385,31 +1392,43 @@ impl Overlay {
         }
     }
 
-    /// Stops recording, finalizes the mp4, sets the result, and ends the session.
+    /// Stops recording, finalizes the file, sets the result, and ends the session.
     fn stop_recording(&mut self, _event_loop: &ActiveEventLoop) {
+        let mut stop_ok = true;
         if let Some(rec) = self.recorder.take()
             && let Err(e) = rec.stop()
         {
             eprintln!("録画停止に失敗: {e}");
+            stop_ok = false;
         }
         if let Some(path) = self.record_path.take() {
-            let cfg = crate::store::snapshot();
-            if cfg.record_auto_reencode
-                && path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("mp4"))
-            {
-                let reencode_path = path.clone();
-                std::thread::spawn(move || {
-                    if let Err(e) = capture::reencode_mp4(
-                        &reencode_path,
-                        cfg.record_reencode_encoder,
-                        cfg.record_reencode_quality,
-                        cfg.record_reencode_replace_original,
-                    ) {
-                        eprintln!("録画の自動圧縮に失敗: {e}");
-                    }
-                });
+            // A failed stop (e.g. a JXL recording with no frames) must not
+            // claim success with a missing file.
+            if !stop_ok || !path.exists() {
+                if stop_ok {
+                    eprintln!("録画ファイルが作成されませんでした: {}", path.display());
+                }
+            } else {
+                let cfg = crate::store::snapshot();
+                if cfg.record_auto_reencode
+                    && path
+                        .extension()
+                        .is_some_and(|ext| ext.eq_ignore_ascii_case("mp4"))
+                {
+                    let reencode_path = path.clone();
+                    std::thread::spawn(move || {
+                        if let Err(e) = capture::reencode_mp4(
+                            &reencode_path,
+                            cfg.record_reencode_encoder,
+                            cfg.record_reencode_quality,
+                            cfg.record_reencode_replace_original,
+                        ) {
+                            eprintln!("録画の自動圧縮に失敗: {e}");
+                        }
+                    });
+                }
+                self.outcome = Some(Outcome::Recorded(path));
             }
-            self.outcome = Some(Outcome::Recorded(path));
         }
         self.finish();
     }
@@ -1486,7 +1505,7 @@ impl Overlay {
         let hover = self.control_hover;
         let desktop_on = self.desktop_audio;
         let mic_on = self.mic;
-        let is_gif = matches!(self.record_format, capture::RecordFormat::Gif);
+        let is_non_mp4 = !matches!(self.record_format, capture::RecordFormat::Mp4);
         let fps = self.fps;
         // Reads the level meters from Recorder while recording, or the
         // preview session during setup (before Start).
@@ -1523,17 +1542,21 @@ impl Overlay {
                     CtrlBtn::Primary => (0x0033_A852, "Start".into(), true),
                     CtrlBtn::Format => (
                         0x0044_4444,
-                        if is_gif { "GIF".into() } else { "MP4".into() },
+                        match self.record_format {
+                            capture::RecordFormat::Mp4 => "MP4".into(),
+                            capture::RecordFormat::Gif => "GIF".into(),
+                            capture::RecordFormat::Jxl => "JXL".into(),
+                        },
                         true,
                     ),
                     CtrlBtn::Fps => (0x0044_4444, format!("{fps} FPS"), true),
                     // GIF can't carry audio, so shown disabled.
-                    CtrlBtn::Desktop if is_gif => (0x0033_3333, "Desktop".into(), false),
+                    CtrlBtn::Desktop if is_non_mp4 => (0x0033_3333, "Desktop".into(), false),
                     CtrlBtn::Desktop => {
                         let c = if desktop_on { 0x004D_A6FF } else { 0x0044_4444 };
                         (c, "Desktop".into(), true)
                     }
-                    CtrlBtn::Mic if is_gif => (0x0033_3333, "Mic".into(), false),
+                    CtrlBtn::Mic if is_non_mp4 => (0x0033_3333, "Mic".into(), false),
                     CtrlBtn::Mic => {
                         let c = if mic_on { 0x004D_A6FF } else { 0x0044_4444 };
                         (c, "Mic".into(), true)
@@ -1554,7 +1577,7 @@ impl Overlay {
                 // Overlays a level meter on the inner-right side of the
                 // Desktop/Mic buttons, so it's visible at a glance whether
                 // audio is actually coming in (skipped when shown
-                // disabled for GIF, since there's no audio at all).
+                // disabled for GIF/JXL, since there's no audio at all).
                 match btn {
                     CtrlBtn::Desktop if enabled => {
                         draw_level_meter(&mut canvas, *rect, desktop_level * METER_GAIN)
@@ -1667,9 +1690,10 @@ impl Overlay {
                         Some(CtrlBtn::Format) => {
                             self.record_format = match self.record_format {
                                 capture::RecordFormat::Mp4 => capture::RecordFormat::Gif,
-                                capture::RecordFormat::Gif => capture::RecordFormat::Mp4,
+                                capture::RecordFormat::Gif => capture::RecordFormat::Jxl,
+                                capture::RecordFormat::Jxl => capture::RecordFormat::Mp4,
                             };
-                            // GIF doesn't support audio, so stop the
+                            // GIF/JXL don't support audio, so stop the
                             // preview; it restarts with the current
                             // toggle state if switched back to MP4 (during setup).
                             self.stop_preview_audio();
@@ -1686,8 +1710,8 @@ impl Overlay {
                                 w.request_redraw();
                             }
                         }
-                        // The audio toggles are disabled when GIF is
-                        // selected (only flip for mp4). Can be switched
+                        // The audio toggles are disabled for GIF/JXL
+                        // (only flip for mp4). Can be switched
                         // during setup or recording; while recording it
                         // also applies to the actual recording.
                         Some(CtrlBtn::Desktop)
@@ -3202,8 +3226,18 @@ mod tests {
     #[test]
     fn monitor_at_returns_monitor_under_cursor() {
         let monitors = [
-            Rect { x0: 0, y0: 0, x1: 100, y1: 100 },
-            Rect { x0: 100, y0: 20, x1: 200, y1: 80 },
+            Rect {
+                x0: 0,
+                y0: 0,
+                x1: 100,
+                y1: 100,
+            },
+            Rect {
+                x0: 100,
+                y0: 20,
+                x1: 200,
+                y1: 80,
+            },
         ];
         assert_eq!(monitor_at(&monitors, (150.5, 40.0)), Some(monitors[1]));
         assert_eq!(monitor_at(&monitors, (150.5, 10.0)), None);

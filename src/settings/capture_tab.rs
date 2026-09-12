@@ -26,7 +26,7 @@ pub(super) fn draw_capture(
     t: &TextRenderer,
     dark: bool,
     sw: usize,
-    save_dirs: &[String; 3],
+    save_dirs: &[String; 4],
     save_dir_focus: Option<SaveKind>,
     save_dir_buf: &str,
     save_dir_cursor: TextCursor,
